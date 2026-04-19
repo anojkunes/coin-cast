@@ -11,6 +11,7 @@ dist/
 apps/**/dist/
 packages/**/dist/
 coverage/
+docs/diagrams/*.png
 
 # IDE and OS files
 .idea/
