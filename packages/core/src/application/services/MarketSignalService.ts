@@ -7,6 +7,7 @@ import type { OrderBookSnapshot } from '../../domain/models/OrderBook';
 import type { MarketRepository } from '../ports/MarketRepository';
 import type { NewsFeedRepository } from '../ports/NewsFeedRepository';
 
+import { createLogger } from '../logging/logger';
 import { AssetQualityService } from './AssetQualityService';
 import { LogisticRegressionClassifier } from './LogisticRegressionClassifier';
 import {
@@ -50,8 +51,11 @@ export interface IgnoredAssetSummary {
 }
 
 const DEFAULT_LOAD_CONCURRENCY = 5;
+const DEFAULT_STOCK_HISTORY_LOAD_CONCURRENCY = 2;
 
 export class MarketSignalService {
+  private readonly logger = createLogger('market-signal-service');
+
   private readonly featureBuilder = new MarketFeatureBuilder();
 
   private readonly assetQualityService = new AssetQualityService();
@@ -74,7 +78,20 @@ export class MarketSignalService {
 
   async scan(options: ScanOptions): Promise<ScanResult> {
     const scannedAt = new Date();
+    this.logger.info('Starting market scan', {
+      market: this.profile.assetClass,
+      universeLimit: options.universeLimit,
+      historyDays: options.historyDays,
+      maxSignals: options.maxSignals,
+      actionableConfidence: options.actionableConfidence,
+      repository: this.marketRepository.constructor.name,
+    });
+
     const assets = await this.marketRepository.getUniverse(options.universeLimit);
+    this.logger.info('Universe loaded', {
+      market: this.profile.assetClass,
+      assetsDiscovered: assets.length,
+    });
     const candlesByAsset = await this.loadHistoricalCandles(assets, options.historyDays);
     const benchmarkCandles = await this.loadBenchmarkCandles(options.historyDays);
     const orderBooksByAsset = await this.loadOrderBooks(assets);
@@ -102,6 +119,11 @@ export class MarketSignalService {
       allSamples.push(...samples);
     }
 
+    this.logger.info('Prepared training samples', {
+      market: this.profile.assetClass,
+      assetsWithSamples: sampleByAsset.size,
+      totalSamples: allSamples.length,
+    });
     const model = this.trainModel(allSamples);
     const modelQuality = this.modelQualityService.evaluate(Array.from(sampleByAsset.values()));
     const signals: MarketSignal[] = [];
@@ -232,6 +254,17 @@ export class MarketSignalService {
     signals.sort((left, right) => right.confidence - left.confidence);
     watchlist.sort((left, right) => right.confidence - left.confidence);
 
+    this.logger.info('Market scan completed', {
+      market: this.profile.assetClass,
+      assetsScanned: assets.length,
+      samplesUsed: allSamples.length,
+      signals: signals.length,
+      watchlist: watchlist.length,
+      ignoredAssets: ignoredAssets.length,
+      headlinesUsed: headlines.length,
+      modelQuality: modelQuality.qualityLabel,
+    });
+
     return {
       scannedAt,
       assetsScanned: assets.length,
@@ -248,14 +281,25 @@ export class MarketSignalService {
     const model = new LogisticRegressionClassifier();
 
     if (samples.length === 0) {
+      this.logger.warn('Skipping model training because no samples were produced', {
+        market: this.profile.assetClass,
+      });
       return model;
     }
 
     const labels = samples.map((sample) => sample.label);
     if (new Set(labels).size < 2) {
+      this.logger.warn('Skipping model training because labels do not contain both classes', {
+        market: this.profile.assetClass,
+        sampleCount: samples.length,
+      });
       return model;
     }
 
+    this.logger.info('Training logistic regression model', {
+      market: this.profile.assetClass,
+      sampleCount: samples.length,
+    });
     model.fit(
       samples.map((sample) => sample.features),
       labels,
@@ -273,29 +317,93 @@ export class MarketSignalService {
     assets: MarketAsset[],
     historyDays: number,
   ): Promise<Map<string, Awaited<ReturnType<MarketRepository['getHistoricalCandles']>>>> {
+    const concurrency = this.getHistoricalLoadConcurrency();
+    const progressInterval = this.getProgressInterval(assets.length);
+    let completed = 0;
+    let assetsWithHistory = 0;
+
+    this.logger.info('Loading historical candles', {
+      market: this.profile.assetClass,
+      assets: assets.length,
+      historyDays,
+      concurrency,
+    });
+
     const entries = await mapWithConcurrency(
       assets,
-      DEFAULT_LOAD_CONCURRENCY,
-      async (asset) =>
-        [asset.id, await this.marketRepository.getHistoricalCandles(asset, historyDays)] as const,
+      concurrency,
+      async (asset) => {
+        const candles = await this.marketRepository.getHistoricalCandles(asset, historyDays);
+        completed += 1;
+        if (candles.length > 0) {
+          assetsWithHistory += 1;
+        }
+
+        if (
+          completed <= Math.min(3, assets.length) ||
+          completed % progressInterval === 0 ||
+          completed === assets.length
+        ) {
+          this.logger.info('Historical candle load progress', {
+            market: this.profile.assetClass,
+            completed,
+            total: assets.length,
+            symbol: asset.symbol,
+            candles: candles.length,
+          });
+        }
+
+        return [asset.id, candles] as const;
+      },
     );
+
+    this.logger.info('Historical candles loaded', {
+      market: this.profile.assetClass,
+      totalAssets: assets.length,
+      assetsWithHistory,
+      assetsWithoutHistory: assets.length - assetsWithHistory,
+    });
 
     return new Map(entries);
   }
 
   private async loadHeadlines(): Promise<NewsFeed[]> {
+    this.logger.info('Loading news headlines', {
+      market: this.profile.assetClass,
+      repositories: this.newsRepositories.length,
+    });
     const headlineGroups = await Promise.all(
       this.newsRepositories.map(async (repository) => repository.getHeadlines()),
     );
 
-    return headlineGroups.flat();
+    const headlines = headlineGroups.flat();
+    this.logger.info('News headlines loaded', {
+      market: this.profile.assetClass,
+      headlines: headlines.length,
+    });
+
+    return headlines;
   }
 
   private async loadBenchmarkCandles(historyDays: number): Promise<BenchmarkCandles> {
+    this.logger.info('Loading benchmark candles', {
+      market: this.profile.assetClass,
+      benchmarkPrimary: this.profile.benchmarkPrimary.symbol,
+      benchmarkSecondary: this.profile.benchmarkSecondary.symbol,
+      historyDays,
+    });
     const [primary, secondary] = await Promise.all([
       this.marketRepository.getHistoricalCandles(this.profile.benchmarkPrimary, historyDays),
       this.marketRepository.getHistoricalCandles(this.profile.benchmarkSecondary, historyDays),
     ]);
+
+    this.logger.info('Benchmark candles loaded', {
+      market: this.profile.assetClass,
+      benchmarkPrimary: this.profile.benchmarkPrimary.symbol,
+      primaryCandles: primary.length,
+      benchmarkSecondary: this.profile.benchmarkSecondary.symbol,
+      secondaryCandles: secondary.length,
+    });
 
     return {
       primary,
@@ -305,15 +413,53 @@ export class MarketSignalService {
   }
 
   private async loadOrderBooks(assets: MarketAsset[]): Promise<Map<string, OrderBookSnapshot>> {
+    if (this.profile.assetClass === 'stock') {
+      this.logger.info('Skipping order book loading for stock scan', {
+        market: this.profile.assetClass,
+      });
+      return new Map();
+    }
+
+    this.logger.info('Loading order books', {
+      market: this.profile.assetClass,
+      assets: assets.length,
+      concurrency: DEFAULT_LOAD_CONCURRENCY,
+    });
     const entries = await mapWithConcurrency(
       assets,
       DEFAULT_LOAD_CONCURRENCY,
       async (asset) => [asset.id, await this.marketRepository.getOrderBook(asset, 10)] as const,
     );
 
-    return new Map(
+    const orderBooks = new Map(
       entries.filter((entry): entry is readonly [string, OrderBookSnapshot] => entry[1] != null),
     );
+
+    this.logger.info('Order books loaded', {
+      market: this.profile.assetClass,
+      assetsWithOrderBooks: orderBooks.size,
+      assetsRequested: assets.length,
+    });
+
+    return orderBooks;
+  }
+
+  private getHistoricalLoadConcurrency(): number {
+    return this.profile.assetClass === 'stock'
+      ? DEFAULT_STOCK_HISTORY_LOAD_CONCURRENCY
+      : DEFAULT_LOAD_CONCURRENCY;
+  }
+
+  private getProgressInterval(totalAssets: number): number {
+    if (totalAssets <= 25) {
+      return 5;
+    }
+
+    if (totalAssets <= 250) {
+      return 25;
+    }
+
+    return 100;
   }
 
   private combineSignals(

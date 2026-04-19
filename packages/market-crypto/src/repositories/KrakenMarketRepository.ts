@@ -1,6 +1,12 @@
 import axios, { type AxiosInstance } from 'axios';
 
-import type { Candle, MarketAsset, MarketRepository, OrderBookSnapshot } from '@coin-cast/core';
+import {
+  createLogger,
+  type Candle,
+  type MarketAsset,
+  type MarketRepository,
+  type OrderBookSnapshot,
+} from '@coin-cast/core';
 import { retryWithBackoff, sharedHttpAgentOptions } from '@coin-cast/http-utils';
 
 interface KrakenTickerStats {
@@ -140,6 +146,8 @@ const extractSymbol = (text: string): string | null => {
 };
 
 export class KrakenMarketRepository implements MarketRepository {
+  private readonly logger = createLogger('kraken-market-repository');
+
   private readonly http: AxiosInstance;
   private readonly webHttp: AxiosInstance;
 
@@ -170,6 +178,10 @@ export class KrakenMarketRepository implements MarketRepository {
   }
 
   async getUniverse(limit: number): Promise<MarketAsset[]> {
+    this.logger.info('Requesting Kraken crypto universe', {
+      endpoints: ['/AssetPairs', '/Ticker', '/prices'],
+      limit,
+    });
     const [pairsResponse, tickersResponse, priceDirectory] = await Promise.all([
       this.request<KrakenAssetPairsResponse>(() => this.http.get('/AssetPairs'), 'Kraken asset pairs'),
       this.request<KrakenTickerResponse>(() => this.http.get('/Ticker'), 'Kraken tickers'),
@@ -208,7 +220,13 @@ export class KrakenMarketRepository implements MarketRepository {
       .sort((left, right) => (right.volume24hUsd ?? 0) - (left.volume24hUsd ?? 0));
 
     const deduped = dedupeAssets(assets);
-    return limit <= 0 ? deduped : deduped.slice(0, limit);
+    const results = limit <= 0 ? deduped : deduped.slice(0, limit);
+    this.logger.info('Kraken crypto universe loaded', {
+      assetPairs: Object.keys(pairs).length,
+      returnedAssets: results.length,
+    });
+
+    return results;
   }
 
   async getHistoricalCandles(asset: MarketAsset, days: number): Promise<Candle[]> {
@@ -234,7 +252,12 @@ export class KrakenMarketRepository implements MarketRepository {
           volume: readNumber(row[6]),
         }))
         .filter((candle) => Number.isFinite(candle.timestamp) && Number.isFinite(candle.close) && candle.close > 0);
-    } catch {
+    } catch (error) {
+      this.logger.warn('Kraken historical candle request failed', {
+        symbol: asset.symbol,
+        endpoint: '/OHLC',
+        message: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }
@@ -272,7 +295,12 @@ export class KrakenMarketRepository implements MarketRepository {
           }))
           .filter((level) => level.price > 0 && level.volume > 0),
       };
-    } catch {
+    } catch (error) {
+      this.logger.warn('Kraken order book request failed', {
+        symbol: asset.symbol,
+        endpoint: '/Depth',
+        message: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   }

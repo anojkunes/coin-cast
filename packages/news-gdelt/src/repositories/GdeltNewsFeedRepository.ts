@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-import type { NewsFeed, NewsFeedRepository } from '@coin-cast/core';
+import { createLogger, type NewsFeed, type NewsFeedRepository } from '@coin-cast/core';
 import { retryWithBackoff, sharedHttpAgentOptions } from '@coin-cast/http-utils';
 
 const stripHtml = (value: string): string =>
@@ -56,6 +56,8 @@ interface GdeltJsonFeedResponse {
 }
 
 export class GdeltNewsFeedRepository implements NewsFeedRepository {
+  private readonly logger = createLogger('gdelt-news-feed-repository');
+
   constructor(
     private readonly baseUrl = process.env.GDELT_BASE_URL || 'https://api.gdeltproject.org/api/v2/doc/doc',
     private readonly timespan = process.env.GDELT_TIMESPAN || '24h',
@@ -70,6 +72,13 @@ export class GdeltNewsFeedRepository implements NewsFeedRepository {
     if (!this.baseUrl) {
       return [];
     }
+
+    this.logger.info('Loading GDELT headlines', {
+      baseUrl: this.baseUrl,
+      queries: this.queries.length,
+      timespan: this.timespan,
+      maxRecords: this.maxRecords,
+    });
 
     try {
       const queryResults = await Promise.all(this.queries.map((query) => this.fetchQuery(query)));
@@ -88,12 +97,16 @@ export class GdeltNewsFeedRepository implements NewsFeedRepository {
         }
       }
 
-      return headlines.sort((left, right) => right.publishedAt - left.publishedAt);
+      const results = headlines.sort((left, right) => right.publishedAt - left.publishedAt);
+      this.logger.info('GDELT headlines loaded', {
+        headlines: results.length,
+      });
+
+      return results;
     } catch (error) {
-      console.error(
-        'Failed to load GDELT headlines:',
-        error instanceof Error ? error.message : error,
-      );
+      this.logger.error('Failed to load GDELT headlines', {
+        message: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }

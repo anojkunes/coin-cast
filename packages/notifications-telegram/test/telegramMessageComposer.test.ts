@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { TelegramMessageComposer } from '../src/index';
 
 describe('TelegramMessageComposer', () => {
-  it('formats a single-market scan intro and individual signals', () => {
+  it('formats individual watchlist and signal messages', () => {
     const composer = new TelegramMessageComposer();
 
     const scannedAt = new Date('2026-04-10T20:00:00.000Z');
@@ -61,35 +61,36 @@ describe('TelegramMessageComposer', () => {
     expect(ignored).toHaveLength(1);
     expect(ignored[0]).toContain('🚫 Stocks | IGN (Ignored One)');
     expect(ignored[0]).toContain('Ignored because: confidence 18% below alert threshold 31%');
-    expect(
-      composer.composeWatchlist(
-        [
-          {
-            assetId: 'watch1',
-            assetClass: 'stock',
-            symbol: 'W1',
-            name: 'Watch One',
-            direction: 'bearish',
-            confidence: 0.41,
-            fiveHourProbabilityUp: 0.39,
-            actionRecommendation: 'wait',
-            expectedDurationHours: 48,
-            expectedDurationLabel: '1-2 days',
-            tradeSuitabilityScore: 0.49,
-            tradeVerdict: 'mixed',
-            modelProbabilityUp: 0.48,
-            newsScore: -0.1,
-            qualityScore: 0.52,
-            marketConditionScore: 0.4,
-            relativeStrengthScore: -0.03,
-            priceUsd: 1.23,
-            change24hPercent: -2.3,
-            reasons: ['close to threshold', 'momentum is mixed'],
-          },
-        ],
-        scannedAt,
-      ),
-    ).toContain('👀 Stocks watchlist');
+    const watchlistMessages = composer.composeWatchlistSignals(
+      [
+        {
+          assetId: 'watch1',
+          assetClass: 'stock',
+          symbol: 'W1',
+          name: 'Watch One',
+          direction: 'bearish',
+          confidence: 0.41,
+          fiveHourProbabilityUp: 0.39,
+          actionRecommendation: 'wait',
+          expectedDurationHours: 48,
+          expectedDurationLabel: '1-2 days',
+          tradeSuitabilityScore: 0.49,
+          tradeVerdict: 'mixed',
+          modelProbabilityUp: 0.48,
+          newsScore: -0.1,
+          qualityScore: 0.52,
+          marketConditionScore: 0.4,
+          relativeStrengthScore: -0.03,
+          priceUsd: 1.23,
+          change24hPercent: -2.3,
+          reasons: ['close to threshold', 'momentum is mixed'],
+        },
+      ],
+      scannedAt,
+    );
+    expect(watchlistMessages).toHaveLength(1);
+    expect(watchlistMessages[0]).toContain('👀 Stocks watchlist candidate');
+    expect(watchlistMessages[0]).toContain('W1 (Watch One)');
     expect(signal).toContain('🟢📈✨ BTC (Bitcoin)');
     expect(signal).toContain('Market: Crypto');
     expect(signal).toContain('Forecast for next 5h: Likely up 82.0%');

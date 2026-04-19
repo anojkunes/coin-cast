@@ -6,6 +6,7 @@ import type {
 } from '@coin-cast/core';
 import {
   MarketSignalService,
+  createLogger,
   cryptoScanProfile,
   stockScanProfile,
 } from '@coin-cast/core';
@@ -19,7 +20,7 @@ import type { AppConfig } from './env';
 
 export interface CoinCastApp {
   run: () => Promise<{
-    message: string;
+    dispatchedMessages: number;
     scannedAt: Date;
   }>;
 }
@@ -28,16 +29,13 @@ export interface CoinCastAppOptions {
   marketToRun: MarketAssetClass;
 }
 
-interface MarketRunResult {
-  assetClass: MarketAssetClass;
-  result: ScanResult;
-}
-
 interface MarketRuntime {
   assetClass: MarketAssetClass;
   scanOptions: ScanOptions;
   signalService: MarketSignalService;
 }
+
+const logger = createLogger('coin-cast-runner');
 
 const createNewsRepositories = (config: AppConfig): NewsFeedRepository[] => [
   new GdeltNewsFeedRepository(
@@ -51,47 +49,38 @@ const createNewsRepositories = (config: AppConfig): NewsFeedRepository[] => [
 ];
 
 const createCryptoScanOptions = (config: AppConfig): ScanOptions => ({
-    universeLimit: config.krakenUniverseLimit,
-    historyDays: config.krakenHistoryDays,
-    maxSignals: 5,
-    actionableConfidence: 0.3,
-  });
+  universeLimit: config.krakenUniverseLimit,
+  historyDays: config.krakenHistoryDays,
+  maxSignals: 5,
+  actionableConfidence: 0.3,
+});
 
 const createStockScanOptions = (config: AppConfig): ScanOptions => ({
-    universeLimit: config.stockUniverseLimit,
-    historyDays: config.stockHistoryDays,
-    maxSignals: 5,
-    actionableConfidence: 0.28,
-  });
+  universeLimit: config.stockUniverseLimit,
+  historyDays: config.stockHistoryDays,
+  maxSignals: 5,
+  actionableConfidence: 0.28,
+});
 
-const buildMessages = (
+const getDispatchableMessageCount = (result: ScanResult): number =>
+  result.ignoredAssets.length + result.watchlist.length + result.signals.length;
+
+function* streamMessages(
   composer: TelegramMessageComposer,
-  marketResult: MarketRunResult,
-): string[] => {
-  const { assetClass, result } = marketResult;
-  const messages = [composer.composeRunIntro(assetClass)];
-
-  messages.push(
-    composer.composeSectionIntro({
-      assetClass,
-      scannedAt: result.scannedAt,
-      assetsScanned: result.assetsScanned,
-      signalCount: result.signals.length,
-      watchlistCount: result.watchlist.length,
-      ignoredCount: result.ignoredAssets.length,
-    }),
-  );
-  messages.push(...composer.composeIgnoredAssets(result.ignoredAssets));
-
-  const watchlistMessage = composer.composeWatchlist(result.watchlist, result.scannedAt);
-  if (watchlistMessage) {
-    messages.push(watchlistMessage);
+  result: ScanResult,
+): Generator<string> {
+  for (const message of composer.composeIgnoredAssets(result.ignoredAssets)) {
+    yield message;
   }
 
-  messages.push(...composer.composeSignals(result.signals, result.scannedAt));
+  for (const message of composer.composeWatchlistSignals(result.watchlist, result.scannedAt)) {
+    yield message;
+  }
 
-  return messages.filter(Boolean);
-};
+  for (const message of composer.composeSignals(result.signals, result.scannedAt)) {
+    yield message;
+  }
+}
 
 const createMarketRuntime = (
   config: AppConfig,
@@ -146,29 +135,55 @@ export const createCoinCastApp = (
 
   return {
     async run() {
+      logger.info('Running market scan', {
+        market: marketRuntime.assetClass,
+        scanOptions: marketRuntime.scanOptions,
+      });
       const result = await marketRuntime.signalService.scan(
         marketRuntime.scanOptions,
       );
+      const totalMessages = getDispatchableMessageCount(result);
 
-      const messages = buildMessages(messageComposer, {
-        assetClass: marketRuntime.assetClass,
-        result,
+      logger.info('Prepared Telegram messages', {
+        market: marketRuntime.assetClass,
+        messages: totalMessages,
+        assetsScanned: result.assetsScanned,
+        signals: result.signals.length,
+        watchlist: result.watchlist.length,
+        ignoredAssets: result.ignoredAssets.length,
       });
 
-      for (let index = 0; index < messages.length; index += 1) {
-        if (index > 0 && config.telegramMessageDelayMs > 0) {
+      let dispatchedMessages = 0;
+
+      for (const message of streamMessages(messageComposer, result)) {
+        if (dispatchedMessages > 0 && config.telegramMessageDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, config.telegramMessageDelayMs));
         }
 
-        const message = messages[index];
-        if (!message) {
-          continue;
-        }
+        dispatchedMessages += 1;
+        logger.info('Dispatching Telegram message', {
+          market: marketRuntime.assetClass,
+          messageNumber: dispatchedMessages,
+          totalMessages,
+          messageLength: message.length,
+        });
         await notificationRepository.send(message);
       }
 
+      if (dispatchedMessages === 0) {
+        logger.info('No Telegram messages were dispatched for this run', {
+          market: marketRuntime.assetClass,
+        });
+      }
+
+      logger.info('Market run finished', {
+        market: marketRuntime.assetClass,
+        scannedAt: result.scannedAt.toISOString(),
+        dispatchedMessages,
+      });
+
       return {
-        message: messages.join('\n\n'),
+        dispatchedMessages,
         scannedAt: result.scannedAt,
       };
     },

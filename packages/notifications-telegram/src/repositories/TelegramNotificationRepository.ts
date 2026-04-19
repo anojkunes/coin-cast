@@ -1,9 +1,11 @@
 import axios, { type AxiosInstance } from 'axios';
 
-import type { NotificationRepository } from '@coin-cast/core';
+import { createLogger, type NotificationRepository } from '@coin-cast/core';
 import { retryWithBackoff, sharedHttpAgentOptions } from '@coin-cast/http-utils';
 
 export class TelegramNotificationRepository implements NotificationRepository {
+  private readonly logger = createLogger('telegram-notification-repository');
+
   private readonly chatId: string;
 
   private readonly http: AxiosInstance;
@@ -34,6 +36,10 @@ export class TelegramNotificationRepository implements NotificationRepository {
   }
 
   async send(message: string): Promise<void> {
+    this.logger.info('Sending Telegram message', {
+      messageLength: message.length,
+      chatIdSuffix: this.chatId.slice(-6),
+    });
     try {
       const response = await retryWithBackoff(
         () =>
@@ -53,11 +59,20 @@ export class TelegramNotificationRepository implements NotificationRepository {
       if (!response.data?.ok) {
         throw new Error(`Telegram API error: ${JSON.stringify(response.data)}`);
       }
+
+      this.logger.info('Telegram message sent', {
+        messageLength: message.length,
+      });
     } catch (error: unknown) {
       const response = this.readResponse(error);
       const status = response?.status;
       const payload = response?.data;
       const messageText = error instanceof Error ? error.message : String(error);
+      this.logger.error('Telegram notification failed', {
+        status,
+        payload,
+        message: messageText,
+      });
       throw new Error(
         `Telegram notification failed${status ? ` with status ${status}` : ''}: ${
           payload ? JSON.stringify(payload) : messageText

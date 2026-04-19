@@ -1,6 +1,7 @@
 export * from './application/ports/MarketRepository';
 export * from './application/ports/NewsFeedRepository';
 export * from './application/ports/NotificationRepository';
+export * from './application/logging/logger';
 export * from './application/services/AssetQualityService';
 export * from './application/services/LogisticRegressionClassifier';
 export * from './application/services/MarketConditionService';

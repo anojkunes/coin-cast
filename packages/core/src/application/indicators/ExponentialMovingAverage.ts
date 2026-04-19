@@ -1,8 +1,6 @@
 export class ExponentialMovingAverage {
   private readonly multiplier: number;
 
-  private sampleCount = 0;
-
   private currentValue: number | null = null;
 
   private warmupValues: number[] = [];
@@ -16,8 +14,6 @@ export class ExponentialMovingAverage {
   }
 
   add(value: number): number | null {
-    this.sampleCount += 1;
-
     if (this.currentValue == null) {
       this.warmupValues.push(value);
       if (this.warmupValues.length < this.period) {

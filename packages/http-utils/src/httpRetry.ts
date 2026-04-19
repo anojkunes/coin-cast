@@ -68,7 +68,15 @@ export const retryWithBackoff = async <T>(
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
-      return await request();
+      const result = await request();
+
+      if (attempt > 1) {
+        console.info(
+          `${options.context} succeeded after ${attempt} attempts`,
+        );
+      }
+
+      return result;
     } catch (error) {
       lastError = error;
       const status =
@@ -88,5 +96,8 @@ export const retryWithBackoff = async <T>(
     }
   }
 
+  console.error(
+    `${options.context} failed after ${attempts} attempts: ${formatError(lastError)}`,
+  );
   throw new Error(formatError(lastError));
 };

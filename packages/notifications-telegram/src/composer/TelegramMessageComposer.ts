@@ -175,6 +175,17 @@ export class TelegramMessageComposer {
     return lines.join('\n').trim();
   }
 
+  composeWatchlistSignal(signal: MarketSignal, scannedAt?: Date): string {
+    return [
+      `👀 ${marketLabel(signal.assetClass)} watchlist candidate`,
+      this.composeSignal(signal, scannedAt),
+    ].join('\n');
+  }
+
+  composeWatchlistSignals(watchlist: MarketSignal[], scannedAt?: Date): string[] {
+    return watchlist.map((signal) => this.composeWatchlistSignal(signal, scannedAt));
+  }
+
   composeSignal(signal: MarketSignal, scannedAt?: Date): string {
     const change = signal.change24hPercent ?? 0;
     const price = signal.priceUsd == null ? 'n/a' : signal.priceUsd.toFixed(4);

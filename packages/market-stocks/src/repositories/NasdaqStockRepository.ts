@@ -1,7 +1,13 @@
 import axios, { type AxiosInstance } from 'axios';
 
-import type { Candle, MarketAsset, MarketRepository, OrderBookSnapshot } from '@coin-cast/core';
-import { retryWithBackoff, sharedHttpAgentOptions } from '@coin-cast/http-utils';
+import {
+  createLogger,
+  type Candle,
+  type MarketAsset,
+  type MarketRepository,
+  type OrderBookSnapshot,
+} from '@coin-cast/core';
+import { createHttpAgentOptions, retryWithBackoff } from '@coin-cast/http-utils';
 
 interface NasdaqApiEnvelope<T> {
   data?: T | null;
@@ -85,6 +91,8 @@ const buildNasdaqHeaders = (refererPath: string): Record<string, string> => ({
 });
 
 export class NasdaqStockRepository implements MarketRepository {
+  private readonly logger = createLogger('nasdaq-stock-repository');
+
   private readonly http: AxiosInstance;
 
   constructor(
@@ -96,7 +104,11 @@ export class NasdaqStockRepository implements MarketRepository {
     this.http = axios.create({
       baseURL: baseUrl,
       timeout: 20_000,
-      ...sharedHttpAgentOptions,
+      ...createHttpAgentOptions({
+        keepAlive: false,
+        maxSockets: 2,
+        maxFreeSockets: 0,
+      }),
       headers: {
         ...buildNasdaqHeaders('/market-activity/stocks/screener'),
       },
@@ -104,6 +116,10 @@ export class NasdaqStockRepository implements MarketRepository {
   }
 
   async getUniverse(limit: number): Promise<MarketAsset[]> {
+    this.logger.info('Requesting Nasdaq stock universe', {
+      endpoint: '/screener/stocks',
+      limit,
+    });
     const response = await this.request<NasdaqScreenerResponse>(
       () =>
         this.http.get('/screener/stocks', {
@@ -139,7 +155,15 @@ export class NasdaqStockRepository implements MarketRepository {
       })
       .sort((left, right) => (right.volume24hUsd ?? 0) - (left.volume24hUsd ?? 0));
 
-    return limit <= 0 ? ranked : ranked.slice(0, limit);
+    const results = limit <= 0 ? ranked : ranked.slice(0, limit);
+    this.logger.info('Nasdaq stock universe loaded', {
+      rowsReceived: rows.length,
+      rankedAssets: ranked.length,
+      assetsReturned: results.length,
+      limitApplied: limit > 0,
+    });
+
+    return results;
   }
 
   async getHistoricalCandles(asset: MarketAsset, days: number): Promise<Candle[]> {
@@ -164,7 +188,7 @@ export class NasdaqStockRepository implements MarketRepository {
         `Nasdaq historical prices for ${asset.symbol}`,
       );
 
-      return (response.tradesTable?.rows ?? [])
+      const candles = (response.tradesTable?.rows ?? [])
         .map((row) => {
           const timestamp = parseDate(row.date);
           if (timestamp == null) {
@@ -179,7 +203,14 @@ export class NasdaqStockRepository implements MarketRepository {
         })
         .filter((candle): candle is Candle => candle != null && candle.close > 0)
         .sort((left, right) => left.timestamp - right.timestamp);
-    } catch {
+
+      return candles;
+    } catch (error) {
+      this.logger.warn('Nasdaq historical candle request failed', {
+        symbol: asset.symbol,
+        endpoint: '/quote/:symbol/historical',
+        message: error instanceof Error ? error.message : String(error),
+      });
       return [];
     }
   }
@@ -223,6 +254,9 @@ export class NasdaqStockRepository implements MarketRepository {
     operation: () => Promise<{ data: NasdaqApiEnvelope<T> }>,
     description: string,
   ): Promise<T> {
+    this.logger.debug('Calling Nasdaq API', {
+      description,
+    });
     const envelope = await retryWithBackoff(
       async () => {
         const response = await operation();
@@ -252,6 +286,9 @@ export class NasdaqStockRepository implements MarketRepository {
       },
     );
 
+    this.logger.debug('Nasdaq API call completed', {
+      description,
+    });
     return envelope;
   }
 }
