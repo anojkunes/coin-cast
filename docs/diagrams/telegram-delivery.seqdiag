@@ -1,0 +1,36 @@
+@startuml
+title Coin Cast Telegram delivery
+
+participant "App bootstrap" as App
+participant "Telegram composer" as Composer
+participant "Telegram repo" as Telegram
+
+App -> Composer: composeIntro()
+Composer --> App: intro text
+App -> Telegram: send(intro)
+
+App -> Composer: composeIgnoredAssets()
+Composer --> App: ignored messages
+loop each ignored coin
+  App -> Telegram: send(message)
+end
+
+App -> Composer: composeSignals(watchlist)
+Composer --> App: watchlist messages
+loop each watchlist coin
+  App -> Telegram: send(message)
+end
+
+App -> Composer: composeSignals(signals)
+Composer --> App: signal messages
+loop each signal coin
+  App -> Telegram: send(message)
+end
+
+note over App,Telegram
+Messages are sent one by one.
+TELEGRAM_MESSAGE_DELAY_MS controls pacing
+for scheduled runs
+end note
+
+@enduml

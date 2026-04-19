@@ -1,0 +1,33 @@
+@startuml
+title Coin Cast end-to-end scan
+
+participant "Cron / CLI" as CLI
+participant "App bootstrap" as App
+participant "Kraken repo" as Kraken
+participant "GDELT repo" as GDELT
+participant "Signal service" as Signal
+participant "Telegram composer" as Composer
+participant "Telegram repo" as Telegram
+
+CLI -> App: start run()
+App -> Kraken: getUniverse()
+Kraken --> App: assets + links
+App -> Signal: scan assets
+Signal -> Kraken: candles + order book
+Signal -> GDELT: news headlines
+Signal -> Signal: feature build\ntrain + score
+Signal --> App: signals + watchlist + ignored
+App -> Composer: compose messages
+Composer --> App: intro + coin cards
+loop each message
+  App -> Telegram: send one-by-one
+  Telegram --> App: ok / retryable failure
+end
+
+note over Signal
+Stateless run:
+no database, no queue,
+each execution stands alone
+end note
+
+@enduml

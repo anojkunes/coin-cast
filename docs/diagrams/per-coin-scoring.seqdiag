@@ -1,0 +1,27 @@
+@startuml
+title Coin Cast per-coin scoring
+
+participant "Signal service" as Signal
+participant "Feature builder" as Feature
+participant "Market model" as Model
+participant "News scorer" as News
+participant "Order book analyzer" as Book
+participant "Trade assessment" as Trade
+
+Signal -> Feature: snapshot + samples
+Feature --> Signal: technical features
+Signal -> Model: predictProbability(features)
+Model --> Signal: technical probability
+Signal -> News: score(asset, headlines)
+News --> Signal: sentiment score
+Signal -> Book: evaluate(order book)
+Book --> Signal: spread + imbalance + quality
+Signal -> Trade: evaluate setup
+Trade --> Signal: 5h probability + action
+
+note over Signal
+Rule-based context is blended with the model
+so one noisy source does not dominate the output
+end note
+
+@enduml

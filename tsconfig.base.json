@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "baseUrl": ".",
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022"],
+    "moduleResolution": "Bundler",
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "paths": {
+      "@coin-cast/core": ["packages/core/src/index.ts"],
+      "@coin-cast/http-utils": ["packages/http-utils/src/index.ts"],
+      "@coin-cast/market-crypto": ["packages/market-crypto/src/index.ts"],
+      "@coin-cast/market-stocks": ["packages/market-stocks/src/index.ts"],
+      "@coin-cast/news-gdelt": ["packages/news-gdelt/src/index.ts"],
+      "@coin-cast/notifications-telegram": ["packages/notifications-telegram/src/index.ts"]
+    }
+  }
+}

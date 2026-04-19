@@ -1,0 +1,52 @@
+name: Coin Cast Stock Scan
+
+on:
+  schedule:
+    - cron: '27 */4 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  stock-scan:
+    runs-on: ubuntu-latest
+    environment: telegram-production
+    env:
+      KRAKEN_BASE_URL: https://api.kraken.com/0/public
+      KRAKEN_UNIVERSE_LIMIT: '0'
+      KRAKEN_HISTORY_DAYS: '180'
+      NASDAQ_BASE_URL: https://api.nasdaq.com/api
+      STOCK_UNIVERSE_LIMIT: '0'
+      STOCK_HISTORY_DAYS: '180'
+      GDELT_BASE_URL: https://api.gdeltproject.org/api/v2/doc/doc
+      GDELT_TIMESPAN: '24h'
+      GDELT_MAX_RECORDS: '50'
+      API_RETRY_MAX_ATTEMPTS: '10'
+      API_RETRY_INITIAL_DELAY_MS: '1000'
+      API_RETRY_MAX_DELAY_MS: '30000'
+      TELEGRAM_BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      TELEGRAM_MESSAGE_DELAY_MS: '30000'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test -- --run
+
+      - name: Build
+        run: npm run build
+
+      - name: Run stock scanner
+        run: npm run start:stocks

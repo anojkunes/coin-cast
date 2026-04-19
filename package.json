@@ -1,0 +1,38 @@
+{
+  "name": "coin-cast",
+  "version": "1.0.0",
+  "private": true,
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev:crypto",
+    "dev:crypto": "npm run dev:crypto -w @coin-cast/app",
+    "dev:stocks": "npm run dev:stocks -w @coin-cast/app",
+    "start": "npm run start:crypto",
+    "start:crypto": "npm run start:crypto -w @coin-cast/app",
+    "start:stocks": "npm run start:stocks -w @coin-cast/app",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "format": "prettier --write .",
+    "test": "vitest",
+    "test:watch": "vitest --watch",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.9.2",
+    "@typescript-eslint/eslint-plugin": "^8.46.2",
+    "@typescript-eslint/parser": "^8.46.2",
+    "@vitest/coverage-v8": "^4.0.6",
+    "eslint": "^9.38.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^14.0.0",
+    "prettier": "^3.6.2",
+    "tsup": "^8.5.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.6"
+  }
+}
