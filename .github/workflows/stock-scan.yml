@@ -11,7 +11,7 @@ permissions:
 jobs:
   stock-scan:
     runs-on: ubuntu-latest
-    environment: telegram-production
+    environment: live
     env:
       KRAKEN_BASE_URL: https://api.kraken.com/0/public
       KRAKEN_UNIVERSE_LIMIT: '0'
