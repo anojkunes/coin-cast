@@ -1,0 +1,15 @@
+{
+  "name": "@coin-cast/market-crypto",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsup src/index.ts --format esm --sourcemap --clean --out-dir dist"
+  },
+  "dependencies": {
+    "@coin-cast/core": "file:../core",
+    "@coin-cast/http-utils": "file:../http-utils",
+    "axios": "^1.13.2"
+  }
+}

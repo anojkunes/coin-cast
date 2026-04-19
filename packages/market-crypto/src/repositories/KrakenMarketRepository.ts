@@ -1,0 +1,339 @@
+import axios, { type AxiosInstance } from 'axios';
+
+import type { Candle, MarketAsset, MarketRepository, OrderBookSnapshot } from '@coin-cast/core';
+import { retryWithBackoff, sharedHttpAgentOptions } from '@coin-cast/http-utils';
+
+interface KrakenTickerStats {
+  c?: [string, string];
+  v?: [string, string];
+  o?: string;
+}
+
+interface KrakenAssetPair {
+  altname?: string;
+  wsname?: string;
+  base?: string;
+  quote?: string;
+  status?: string;
+}
+
+interface KrakenTickerResponse {
+  result?: Record<string, KrakenTickerStats>;
+}
+
+interface KrakenAssetPairsResponse {
+  result?: Record<string, KrakenAssetPair>;
+}
+
+interface KrakenOhlcRow extends Array<number | string> {
+  0: number;
+  1: string;
+  2: string;
+  3: string;
+  4: string;
+  5: string;
+  6: number;
+  7: number;
+}
+
+interface KrakenOhlcResponse {
+  result?: Record<string, KrakenOhlcRow[]>;
+}
+
+interface KrakenDepthLevel extends Array<string | number> {
+  0: string;
+  1: string;
+  2: number | string;
+}
+
+interface KrakenDepthResponse {
+  result?: Record<
+    string,
+    {
+      bids?: KrakenDepthLevel[];
+      asks?: KrakenDepthLevel[];
+    }
+  >;
+}
+
+interface KrakenPriceDirectoryEntry {
+  symbol: string;
+  url: string;
+  slug: string;
+}
+
+const stablecoinSymbols = new Set([
+  'USDT',
+  'USDC',
+  'DAI',
+  'TUSD',
+  'FDUSD',
+  'PYUSD',
+  'USDE',
+  'FRAX',
+  'USDP',
+  'USTC',
+  'LUSD',
+]);
+
+const parseBaseSymbol = (pair: KrakenAssetPair, pairKey: string): string => {
+  if (pair.wsname?.includes('/')) {
+    return pair.wsname.split('/')[0] ?? pairKey;
+  }
+
+  if (pair.altname) {
+    return pair.altname.replace(/USD$|USDT$|EUR$|GBP$/i, '');
+  }
+
+  return pairKey;
+};
+
+const dedupeAssets = (assets: MarketAsset[]): MarketAsset[] => {
+  const seen = new Set<string>();
+  const result: MarketAsset[] = [];
+
+  for (const asset of assets) {
+    const key = asset.id.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(asset);
+  }
+
+  return result;
+};
+
+const readNumber = (value: unknown): number => {
+  const parsed = typeof value === 'string' ? Number(value) : Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const stripHtml = (value: string): string =>
+  value
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const extractSymbol = (text: string): string | null => {
+  const tokens = text
+    .split(/\s+/)
+    .map((token) => token.replace(/[^A-Z0-9]/g, ''))
+    .filter(Boolean);
+
+  if (tokens.length === 0) {
+    return null;
+  }
+
+  const first = tokens[0];
+  const last = tokens[tokens.length - 1];
+  if (first && first === last) {
+    return first.toUpperCase();
+  }
+
+  return first?.toUpperCase() ?? null;
+};
+
+export class KrakenMarketRepository implements MarketRepository {
+  private readonly http: AxiosInstance;
+  private readonly webHttp: AxiosInstance;
+
+  constructor(
+    baseUrl = process.env.KRAKEN_BASE_URL || 'https://api.kraken.com/0/public',
+    private readonly maxRetries = Number(process.env.API_RETRY_MAX_ATTEMPTS || 10),
+    private readonly initialRetryDelayMs = Number(process.env.API_RETRY_INITIAL_DELAY_MS || 1_000),
+    private readonly maxRetryDelayMs = Number(process.env.API_RETRY_MAX_DELAY_MS || 30_000),
+  ) {
+    this.http = axios.create({
+      baseURL: baseUrl,
+      timeout: 15_000,
+      ...sharedHttpAgentOptions,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'CoinCastBot/1.0',
+      },
+    });
+    this.webHttp = axios.create({
+      baseURL: 'https://www.kraken.com',
+      timeout: 15_000,
+      ...sharedHttpAgentOptions,
+      headers: {
+        Accept: 'text/html,application/xhtml+xml',
+        'User-Agent': 'CoinCastBot/1.0',
+      },
+    });
+  }
+
+  async getUniverse(limit: number): Promise<MarketAsset[]> {
+    const [pairsResponse, tickersResponse, priceDirectory] = await Promise.all([
+      this.request<KrakenAssetPairsResponse>(() => this.http.get('/AssetPairs'), 'Kraken asset pairs'),
+      this.request<KrakenTickerResponse>(() => this.http.get('/Ticker'), 'Kraken tickers'),
+      this.loadPriceDirectory(),
+    ]);
+
+    const pairs = pairsResponse.result ?? {};
+    const tickers = tickersResponse.result ?? {};
+
+    const assets = Object.entries(pairs)
+      .filter(([, pair]) => pair.status === 'online')
+      .filter(([, pair]) => pair.quote?.toUpperCase() === 'ZUSD' || pair.wsname?.endsWith('/USD'))
+      .map(([pairKey, pair]) => {
+        const ticker = tickers[pairKey];
+        const currentPrice = ticker?.c?.[0] ? Number(ticker.c[0]) : undefined;
+        const volume = ticker?.v?.[1] ? Number(ticker.v[1]) : undefined;
+        const open = ticker?.o ? Number(ticker.o) : undefined;
+        const symbol = parseBaseSymbol(pair, pairKey).toUpperCase();
+
+        return {
+          id: pairKey,
+          symbol,
+          name: symbol,
+          assetClass: 'crypto',
+          marketSegment: 'crypto',
+          marketCapRank: undefined,
+          currentPriceUsd: currentPrice,
+          change24hPercent: open && currentPrice ? ((currentPrice - open) / open) * 100 : undefined,
+          volume24hUsd: volume,
+          marketPageUrl: priceDirectory.get(symbol),
+          marketPageLabel: 'Kraken market page',
+        } satisfies MarketAsset;
+      })
+      .filter((asset) => asset.currentPriceUsd != null)
+      .filter((asset) => !stablecoinSymbols.has(asset.symbol))
+      .sort((left, right) => (right.volume24hUsd ?? 0) - (left.volume24hUsd ?? 0));
+
+    const deduped = dedupeAssets(assets);
+    return limit <= 0 ? deduped : deduped.slice(0, limit);
+  }
+
+  async getHistoricalCandles(asset: MarketAsset, days: number): Promise<Candle[]> {
+    try {
+      const response = await this.request<KrakenOhlcResponse>(
+        () =>
+          this.http.get('/OHLC', {
+            params: {
+              pair: asset.id,
+              interval: 1440,
+              since: this.sinceUnix(days),
+            },
+          }),
+        `Kraken OHLC for ${asset.symbol}`,
+      );
+
+      const rows = response.result?.[asset.id] ?? [];
+
+      return rows
+        .map((row) => ({
+          timestamp: row[0] * 1000,
+          close: readNumber(row[4]),
+          volume: readNumber(row[6]),
+        }))
+        .filter((candle) => Number.isFinite(candle.timestamp) && Number.isFinite(candle.close) && candle.close > 0);
+    } catch {
+      return [];
+    }
+  }
+
+  async getOrderBook(asset: MarketAsset, depth = 10): Promise<OrderBookSnapshot | null> {
+    try {
+      const response = await this.request<KrakenDepthResponse>(
+        () =>
+          this.http.get('/Depth', {
+            params: {
+              pair: asset.id,
+              count: depth,
+            },
+          }),
+        `Kraken depth for ${asset.symbol}`,
+      );
+
+      const book = response.result?.[asset.id];
+      if (!book) {
+        return null;
+      }
+
+      return {
+        assetId: asset.id,
+        bids: (book.bids ?? [])
+          .map((level) => ({
+            price: readNumber(level[0]),
+            volume: readNumber(level[1]),
+          }))
+          .filter((level) => level.price > 0 && level.volume > 0),
+        asks: (book.asks ?? [])
+          .map((level) => ({
+            price: readNumber(level[0]),
+            volume: readNumber(level[1]),
+          }))
+          .filter((level) => level.price > 0 && level.volume > 0),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private sinceUnix(days: number): number {
+    const now = Math.floor(Date.now() / 1000);
+    return now - Math.max(1, days) * 86_400;
+  }
+
+  private async loadPriceDirectory(): Promise<Map<string, string>> {
+    try {
+      const html = await this.request<string>(
+        () => this.webHttp.get('/prices'),
+        'Kraken price directory',
+      );
+
+      const entries = new Map<string, KrakenPriceDirectoryEntry>();
+      const regex = /<a[^>]+href="\/prices\/([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+      let match: RegExpExecArray | null = null;
+
+      while ((match = regex.exec(html)) != null) {
+        const slug = match[1];
+        const text = stripHtml(match[2] ?? '');
+        const symbol = extractSymbol(text);
+
+        if (!slug || !symbol) {
+          continue;
+        }
+
+        const candidate: KrakenPriceDirectoryEntry = {
+          symbol,
+          url: `https://www.kraken.com/prices/${slug}`,
+          slug,
+        };
+        const existing = entries.get(symbol);
+        if (!existing || candidate.slug.length > existing.slug.length) {
+          entries.set(symbol, candidate);
+        }
+      }
+
+      return new Map(Array.from(entries.values()).map((entry) => [entry.symbol, entry.url]));
+    } catch {
+      return new Map();
+    }
+  }
+
+  private async request<T>(
+    requestFn: () => Promise<{ data: T }>,
+    context: string,
+  ): Promise<T> {
+    return retryWithBackoff(
+      async () => {
+        const response = await requestFn();
+        return response.data;
+      },
+      {
+        context,
+        maxAttempts: this.maxRetries,
+        initialDelayMs: this.initialRetryDelayMs,
+        maxDelayMs: this.maxRetryDelayMs,
+      },
+    );
+  }
+}
