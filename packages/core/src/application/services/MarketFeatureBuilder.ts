@@ -1,4 +1,8 @@
-import { EMA, MACD, RSI } from '../../vendor/trading-signals/index.js';
+import {
+  ExponentialMovingAverage,
+  MovingAverageConvergenceDivergence,
+  RelativeStrengthIndex,
+} from '../indicators';
 
 import type { Candle } from '../../domain/models/Candle';
 import type { MarketAsset } from '../../domain/models/MarketAsset';
@@ -248,11 +252,11 @@ export class MarketFeatureBuilder {
   }> {
     const closes = candles.map((candle) => candle.close);
 
-    const ema7Indicator = new EMA(7);
-    const ema21Indicator = new EMA(21);
-    const ema50Indicator = new EMA(50);
-    const rsi14Indicator = new RSI(14);
-    const macdIndicator = new MACD(new EMA(12), new EMA(26), new EMA(9));
+    const ema7Indicator = new ExponentialMovingAverage(7);
+    const ema21Indicator = new ExponentialMovingAverage(21);
+    const ema50Indicator = new ExponentialMovingAverage(50);
+    const rsi14Indicator = new RelativeStrengthIndex(14);
+    const macdIndicator = new MovingAverageConvergenceDivergence(12, 26, 9);
 
     const ema7: number[] = [];
     const ema21: number[] = [];
