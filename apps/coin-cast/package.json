@@ -1,0 +1,23 @@
+{
+  "name": "@coin-cast/app",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "npm run dev:crypto",
+    "dev:crypto": "tsx --env-file ../../.env src/index.ts crypto",
+    "dev:stocks": "tsx --env-file ../../.env src/index.ts stock",
+    "start": "npm run start:crypto",
+    "start:crypto": "node dist/index.js crypto",
+    "start:stocks": "node dist/index.js stock",
+    "build": "tsup src/index.ts --format esm --sourcemap --clean --out-dir dist"
+  },
+  "dependencies": {
+    "@coin-cast/core": "file:../../packages/core",
+    "@coin-cast/market-crypto": "file:../../packages/market-crypto",
+    "@coin-cast/market-stocks": "file:../../packages/market-stocks",
+    "@coin-cast/news-gdelt": "file:../../packages/news-gdelt",
+    "@coin-cast/notifications-telegram": "file:../../packages/notifications-telegram"
+  }
+}
