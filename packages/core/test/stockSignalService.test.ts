@@ -84,4 +84,29 @@ describe('MarketSignalService with the stock profile', () => {
     expect(result.signals[0]?.symbol).toBe('MSFT');
     expect(result.signals[0]?.direction).toBe('bullish');
   });
+
+  it('can scan with a pretrained stock model artifact', async () => {
+    const service = new MarketSignalService(
+      new FakeMarketRepository(),
+      [new FakeNewsRepository()],
+      stockScanProfile,
+    );
+
+    const scanOptions = {
+      universeLimit: 1,
+      historyDays: 90,
+      maxSignals: 5,
+      actionableConfidence: 0.1,
+    };
+    const pretrainedModel = await service.train(scanOptions);
+    const result = await service.scan(scanOptions, {
+      pretrainedModel,
+    });
+
+    expect(pretrainedModel.assetClass).toBe('stock');
+    expect(pretrainedModel.samplesUsed).toBeGreaterThan(0);
+    expect(result.assetsScanned).toBe(1);
+    expect(result.signals).toHaveLength(1);
+    expect(result.modelQuality.qualityLabel).toBe(pretrainedModel.modelQuality.qualityLabel);
+  });
 });

@@ -142,16 +142,16 @@ describe('TelegramMessageComposer', () => {
         direction: 'bearish',
         confidence: 0.6,
         fiveHourProbabilityUp: 0.2,
-        actionRecommendation: 'avoid',
+        actionRecommendation: 'sell',
         expectedDurationHours: 48,
         expectedDurationLabel: '1-2 days',
-        tradeSuitabilityScore: 0.3,
-        tradeVerdict: 'avoid',
+        tradeSuitabilityScore: 0.76,
+        tradeVerdict: 'good',
         modelProbabilityUp: 0.4,
-        newsScore: 0,
-        qualityScore: 0.5,
-        marketConditionScore: 0.5,
-        relativeStrengthScore: 0,
+        newsScore: -0.3,
+        qualityScore: 0.82,
+        marketConditionScore: -0.18,
+        relativeStrengthScore: -0.09,
         priceUsd: 1,
         change24hPercent: -1,
         reasons: ['example'],
@@ -160,5 +160,6 @@ describe('TelegramMessageComposer', () => {
     );
 
     expect(noLinkSignal).not.toContain('Market page:');
+    expect(noLinkSignal).toContain('Best action now: Sell');
   });
 });

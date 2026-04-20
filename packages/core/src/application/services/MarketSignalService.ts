@@ -9,7 +9,10 @@ import type { NewsFeedRepository } from '../ports/NewsFeedRepository';
 
 import { createLogger } from '../logging/logger';
 import { AssetQualityService } from './AssetQualityService';
-import { LogisticRegressionClassifier } from './LogisticRegressionClassifier';
+import {
+  LogisticRegressionClassifier,
+  type SerializedLogisticRegressionClassifier,
+} from './LogisticRegressionClassifier';
 import {
   MarketFeatureBuilder,
   type BenchmarkCandles,
@@ -27,6 +30,8 @@ import { mapWithConcurrency } from '../utils/mapWithConcurrency';
 export interface ScanOptions {
   universeLimit: number;
   historyDays: number;
+  historyLoadConcurrency?: number;
+  symbolFilter?: string[];
   maxSignals: number;
   actionableConfidence: number;
 }
@@ -50,8 +55,27 @@ export interface IgnoredAssetSummary {
   reason: string;
 }
 
+export interface ScanHooks {
+  onSignal?: (signal: MarketSignal, context: { scannedAt: Date }) => Promise<void> | void;
+}
+
+export interface PretrainedMarketModel {
+  assetClass: MarketAssetClass;
+  trainedAt: string;
+  assetsTrained: number;
+  samplesUsed: number;
+  model: SerializedLogisticRegressionClassifier;
+  modelQuality: ModelQualityReport;
+}
+
+export interface ScanExecutionOptions {
+  hooks?: ScanHooks;
+  pretrainedModel?: PretrainedMarketModel;
+}
+
 const DEFAULT_LOAD_CONCURRENCY = 5;
 const DEFAULT_STOCK_HISTORY_LOAD_CONCURRENCY = 2;
+const elapsedMs = (startedAt: number): number => Date.now() - startedAt;
 
 export class MarketSignalService {
   private readonly logger = createLogger('market-signal-service');
@@ -76,7 +100,52 @@ export class MarketSignalService {
     private readonly profile: SignalScanProfile = cryptoScanProfile,
   ) {}
 
-  async scan(options: ScanOptions): Promise<ScanResult> {
+  async train(options: ScanOptions): Promise<PretrainedMarketModel> {
+    const trainingStartedAt = Date.now();
+    const assets = await this.loadAssets(options);
+    const candlesByAsset = await this.loadHistoricalCandles(
+      assets,
+      options.historyDays,
+      options.historyLoadConcurrency,
+    );
+    const benchmarkCandles = await this.loadBenchmarkCandles(options.historyDays);
+    const { allSamples, sampleByAsset } = await this.prepareSamples(
+      assets,
+      candlesByAsset,
+      benchmarkCandles,
+    );
+    const model = this.trainModel(allSamples);
+    const modelQuality = this.modelQualityService.evaluate(Array.from(sampleByAsset.values()));
+
+    this.logger.info('Pretrained market model prepared', {
+      market: this.profile.assetClass,
+      assetsTrained: sampleByAsset.size,
+      samplesUsed: allSamples.length,
+      modelQuality: modelQuality.qualityLabel,
+      durationMs: elapsedMs(trainingStartedAt),
+    });
+
+    return {
+      assetClass: this.profile.assetClass,
+      trainedAt: new Date().toISOString(),
+      assetsTrained: sampleByAsset.size,
+      samplesUsed: allSamples.length,
+      model: model.serialize(),
+      modelQuality,
+    };
+  }
+
+  async scan(options: ScanOptions, execution: ScanExecutionOptions = {}): Promise<ScanResult> {
+    const hooks = execution.hooks ?? {};
+    const pretrainedModel = execution.pretrainedModel;
+
+    if (pretrainedModel && pretrainedModel.assetClass !== this.profile.assetClass) {
+      throw new Error(
+        `Pretrained model asset class ${pretrainedModel.assetClass} does not match ${this.profile.assetClass}`,
+      );
+    }
+
+    const scanStartedAt = Date.now();
     const scannedAt = new Date();
     this.logger.info('Starting market scan', {
       market: this.profile.assetClass,
@@ -87,45 +156,81 @@ export class MarketSignalService {
       repository: this.marketRepository.constructor.name,
     });
 
-    const assets = await this.marketRepository.getUniverse(options.universeLimit);
+    const universeLoadStartedAt = Date.now();
+    const assets = await this.loadAssets(options);
     this.logger.info('Universe loaded', {
       market: this.profile.assetClass,
       assetsDiscovered: assets.length,
+      durationMs: elapsedMs(universeLoadStartedAt),
     });
-    const candlesByAsset = await this.loadHistoricalCandles(assets, options.historyDays);
+
+    const historicalLoadStartedAt = Date.now();
+    const candlesByAsset = await this.loadHistoricalCandles(
+      assets,
+      options.historyDays,
+      options.historyLoadConcurrency,
+    );
+    this.logger.info('Historical candle stage finished', {
+      market: this.profile.assetClass,
+      assetsRequested: assets.length,
+      durationMs: elapsedMs(historicalLoadStartedAt),
+    });
+
+    const benchmarkLoadStartedAt = Date.now();
     const benchmarkCandles = await this.loadBenchmarkCandles(options.historyDays);
+    this.logger.info('Benchmark candle stage finished', {
+      market: this.profile.assetClass,
+      durationMs: elapsedMs(benchmarkLoadStartedAt),
+    });
+
+    const orderBookLoadStartedAt = Date.now();
     const orderBooksByAsset = await this.loadOrderBooks(assets);
+    this.logger.info('Order book stage finished', {
+      market: this.profile.assetClass,
+      durationMs: elapsedMs(orderBookLoadStartedAt),
+    });
+
     const marketCondition = this.marketConditionService.evaluate(
       benchmarkCandles.primary,
       benchmarkCandles.secondary,
       benchmarkCandles.displayLabel,
     );
+
+    const headlineLoadStartedAt = Date.now();
     const headlines = await this.loadHeadlines();
+    this.logger.info('Headline stage finished', {
+      market: this.profile.assetClass,
+      durationMs: elapsedMs(headlineLoadStartedAt),
+    });
 
-    const allSamples: MarketSample[] = [];
-    const sampleByAsset = new Map<string, MarketSample[]>();
-    const qualityByAsset = new Map<string, AssetQuality>();
-
-    for (const asset of assets) {
-      const candles = candlesByAsset.get(asset.id) ?? [];
-      const quality = this.assetQualityService.evaluate(asset, candles);
-      const samples = await this.featureBuilder.buildSamples(candles, asset, benchmarkCandles);
-      if (samples.length === 0) {
-        continue;
-      }
-
-      qualityByAsset.set(asset.id, quality);
-      sampleByAsset.set(asset.id, samples);
-      allSamples.push(...samples);
-    }
+    const samplePreparationStartedAt = Date.now();
+    const { allSamples, sampleByAsset, qualityByAsset } = await this.prepareSamples(
+      assets,
+      candlesByAsset,
+      benchmarkCandles,
+    );
 
     this.logger.info('Prepared training samples', {
       market: this.profile.assetClass,
       assetsWithSamples: sampleByAsset.size,
       totalSamples: allSamples.length,
+      durationMs: elapsedMs(samplePreparationStartedAt),
     });
-    const model = this.trainModel(allSamples);
-    const modelQuality = this.modelQualityService.evaluate(Array.from(sampleByAsset.values()));
+
+    const modelTrainingStartedAt = Date.now();
+    const model = pretrainedModel
+      ? LogisticRegressionClassifier.deserialize(pretrainedModel.model)
+      : this.trainModel(allSamples);
+    const modelQuality = pretrainedModel?.modelQuality
+      ?? this.modelQualityService.evaluate(Array.from(sampleByAsset.values()));
+    const samplesUsed = pretrainedModel?.samplesUsed ?? allSamples.length;
+    this.logger.info('Model evaluation stage finished', {
+      market: this.profile.assetClass,
+      samplesEvaluated: modelQuality.samplesEvaluated,
+      pretrainedModelLoaded: pretrainedModel != null,
+      durationMs: elapsedMs(modelTrainingStartedAt),
+    });
+
     const signals: MarketSignal[] = [];
     const watchlist: MarketSignal[] = [];
     const ignoredAssets: IgnoredAssetSummary[] = [];
@@ -135,6 +240,7 @@ export class MarketSignalService {
         ? options.actionableConfidence
         : Math.max(options.actionableConfidence, modelQuality.recommendedConfidenceFloor);
 
+    const signalAssemblyStartedAt = Date.now();
     for (const asset of assets) {
       const candles = candlesByAsset.get(asset.id) ?? [];
       const snapshot = await this.featureBuilder.buildSnapshot(candles, asset, benchmarkCandles);
@@ -249,6 +355,7 @@ export class MarketSignalService {
       }
 
       signals.push(signal);
+      await hooks.onSignal?.(signal, { scannedAt });
     }
 
     signals.sort((left, right) => right.confidence - left.confidence);
@@ -257,23 +364,83 @@ export class MarketSignalService {
     this.logger.info('Market scan completed', {
       market: this.profile.assetClass,
       assetsScanned: assets.length,
-      samplesUsed: allSamples.length,
+      samplesUsed,
       signals: signals.length,
       watchlist: watchlist.length,
       ignoredAssets: ignoredAssets.length,
       headlinesUsed: headlines.length,
       modelQuality: modelQuality.qualityLabel,
+      signalAssemblyDurationMs: elapsedMs(signalAssemblyStartedAt),
+      totalDurationMs: elapsedMs(scanStartedAt),
     });
 
     return {
       scannedAt,
       assetsScanned: assets.length,
-      samplesUsed: allSamples.length,
+      samplesUsed,
       signals: signals.slice(0, options.maxSignals),
       watchlist: watchlist.slice(0, options.maxSignals),
       ignoredAssets: ignoredAssets.slice(0, options.maxSignals),
       headlinesUsed: headlines.length,
       modelQuality,
+    };
+  }
+
+  private async loadAssets(options: ScanOptions): Promise<MarketAsset[]> {
+    const requestedSymbols = options.symbolFilter?.map((symbol) => symbol.trim().toUpperCase()).filter(Boolean) ?? [];
+    const universeLimit = requestedSymbols.length > 0 ? 0 : options.universeLimit;
+    const discovered = await this.marketRepository.getUniverse(universeLimit);
+
+    if (requestedSymbols.length === 0) {
+      return discovered;
+    }
+
+    const requestedSet = new Set(requestedSymbols);
+    const filtered = discovered.filter((asset) => requestedSet.has(asset.symbol.toUpperCase()));
+    const foundSymbols = new Set(filtered.map((asset) => asset.symbol.toUpperCase()));
+    const missingSymbols = requestedSymbols.filter((symbol) => !foundSymbols.has(symbol));
+
+    this.logger.info('Applied symbol filter to market universe', {
+      market: this.profile.assetClass,
+      requestedSymbols: requestedSymbols.length,
+      matchedAssets: filtered.length,
+      missingSymbols: missingSymbols.length,
+      missingSample: missingSymbols.slice(0, 10),
+    });
+
+    return filtered;
+  }
+
+  private async prepareSamples(
+    assets: MarketAsset[],
+    candlesByAsset: Map<string, Awaited<ReturnType<MarketRepository['getHistoricalCandles']>>>,
+    benchmarkCandles: BenchmarkCandles,
+  ): Promise<{
+    allSamples: MarketSample[];
+    sampleByAsset: Map<string, MarketSample[]>;
+    qualityByAsset: Map<string, AssetQuality>;
+  }> {
+    const allSamples: MarketSample[] = [];
+    const sampleByAsset = new Map<string, MarketSample[]>();
+    const qualityByAsset = new Map<string, AssetQuality>();
+
+    for (const asset of assets) {
+      const candles = candlesByAsset.get(asset.id) ?? [];
+      const quality = this.assetQualityService.evaluate(asset, candles);
+      const samples = await this.featureBuilder.buildSamples(candles, asset, benchmarkCandles);
+      if (samples.length === 0) {
+        continue;
+      }
+
+      qualityByAsset.set(asset.id, quality);
+      sampleByAsset.set(asset.id, samples);
+      allSamples.push(...samples);
+    }
+
+    return {
+      allSamples,
+      sampleByAsset,
+      qualityByAsset,
     };
   }
 
@@ -316,8 +483,9 @@ export class MarketSignalService {
   private async loadHistoricalCandles(
     assets: MarketAsset[],
     historyDays: number,
+    concurrencyOverride?: number,
   ): Promise<Map<string, Awaited<ReturnType<MarketRepository['getHistoricalCandles']>>>> {
-    const concurrency = this.getHistoricalLoadConcurrency();
+    const concurrency = this.getHistoricalLoadConcurrency(concurrencyOverride);
     const progressInterval = this.getProgressInterval(assets.length);
     let completed = 0;
     let assetsWithHistory = 0;
@@ -444,7 +612,11 @@ export class MarketSignalService {
     return orderBooks;
   }
 
-  private getHistoricalLoadConcurrency(): number {
+  private getHistoricalLoadConcurrency(concurrencyOverride?: number): number {
+    if (concurrencyOverride != null && Number.isFinite(concurrencyOverride) && concurrencyOverride > 0) {
+      return Math.max(1, Math.floor(concurrencyOverride));
+    }
+
     return this.profile.assetClass === 'stock'
       ? DEFAULT_STOCK_HISTORY_LOAD_CONCURRENCY
       : DEFAULT_LOAD_CONCURRENCY;

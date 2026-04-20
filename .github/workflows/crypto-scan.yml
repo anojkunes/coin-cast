@@ -5,31 +5,37 @@ on:
     - cron: '7 */4 * * *'
   workflow_dispatch: {}
 
+concurrency:
+  group: coin-cast-crypto-scan
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
+env:
+  KRAKEN_BASE_URL: https://api.kraken.com/0/public
+  KRAKEN_UNIVERSE_LIMIT: '0'
+  KRAKEN_HISTORY_DAYS: '180'
+  KRAKEN_SCAN_CHUNK_SIZE: '80'
+  NASDAQ_BASE_URL: https://api.nasdaq.com/api
+  STOCK_UNIVERSE_LIMIT: '0'
+  STOCK_HISTORY_DAYS: '180'
+  GDELT_BASE_URL: https://api.gdeltproject.org/api/v2/doc/doc
+  GDELT_TIMESPAN: '24h'
+  GDELT_MAX_RECORDS: '50'
+  API_RETRY_MAX_ATTEMPTS: '5'
+  API_RETRY_INITIAL_DELAY_MS: '1000'
+  API_RETRY_MAX_DELAY_MS: '30000'
+  COIN_CAST_VERBOSE_LOGS: 'true'
+
 jobs:
-  crypto-scan:
+  prepare:
     runs-on: ubuntu-latest
-    environment: live
-    env:
-      KRAKEN_BASE_URL: https://api.kraken.com/0/public
-      KRAKEN_UNIVERSE_LIMIT: '0'
-      KRAKEN_HISTORY_DAYS: '180'
-      NASDAQ_BASE_URL: https://api.nasdaq.com/api
-      STOCK_UNIVERSE_LIMIT: '0'
-      STOCK_HISTORY_DAYS: '180'
-      GDELT_BASE_URL: https://api.gdeltproject.org/api/v2/doc/doc
-      GDELT_TIMESPAN: '24h'
-      GDELT_MAX_RECORDS: '50'
-      API_RETRY_MAX_ATTEMPTS: '10'
-      API_RETRY_INITIAL_DELAY_MS: '1000'
-      API_RETRY_MAX_DELAY_MS: '30000'
-      COIN_CAST_VERBOSE_LOGS: 'true'
-      TELEGRAM_BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_MESSAGE_DELAY_MS: '30000'
+    outputs:
+      chunk_matrix: ${{ steps.prepare.outputs.chunk_matrix }}
+      kraken_symbols: ${{ steps.prepare.outputs.kraken_symbols }}
+      selected_count: ${{ steps.prepare.outputs.selected_count }}
+      chunk_count: ${{ steps.prepare.outputs.chunk_count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,13 +47,90 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test -- --run
 
-      - name: Build
-        run: npm run build
+      - name: Prepare crypto chunks
+        id: prepare
+        run: npx tsx apps/coin-cast/src/ci/prepareCryptoChunks.ts
 
-      - name: Run crypto scanner
-        run: npm run start:crypto
+  train:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.selected_count != '0' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Train reusable crypto model
+        env:
+          KRAKEN_SYMBOLS: ${{ needs.prepare.outputs.kraken_symbols }}
+          KRAKEN_MODEL_OUTPUT_PATH: crypto-model.json
+        run: npx tsx apps/coin-cast/src/ci/trainCryptoModel.ts
+
+      - name: Upload trained crypto model
+        uses: actions/upload-artifact@v4
+        with:
+          name: crypto-trained-model
+          path: crypto-model.json
+          if-no-files-found: error
+
+  scan-chunks:
+    needs: [prepare, train]
+    if: ${{ needs.prepare.outputs.chunk_count != '0' }}
+    runs-on: ubuntu-latest
+    environment: live
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        chunk: ${{ fromJson(needs.prepare.outputs.chunk_matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download trained crypto model
+        uses: actions/download-artifact@v5
+        with:
+          name: crypto-trained-model
+          path: .
+
+      - name: Scan crypto chunk
+        env:
+          TELEGRAM_BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_DELAY_MS: '0'
+          KRAKEN_SYMBOLS: ${{ matrix.chunk.symbols }}
+          KRAKEN_MODEL_ARTIFACT_PATH: crypto-model.json
+        run: npx tsx apps/coin-cast/src/index.ts crypto
+
+  finalize:
+    needs: [prepare, scan-chunks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize chunked crypto scan
+        run: |
+          echo "Selected crypto pairs: ${{ needs.prepare.outputs.selected_count }}"
+          echo "Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"

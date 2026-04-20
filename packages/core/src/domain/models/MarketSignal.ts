@@ -10,7 +10,7 @@ export interface MarketSignal {
   direction: SignalDirection;
   confidence: number;
   fiveHourProbabilityUp: number;
-  actionRecommendation: 'buy' | 'wait' | 'avoid';
+  actionRecommendation: 'buy' | 'sell' | 'wait' | 'avoid';
   expectedDurationHours: number;
   expectedDurationLabel: string;
   tradeSuitabilityScore: number;

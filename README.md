@@ -66,9 +66,14 @@ Optional overrides:
 - `KRAKEN_BASE_URL`
 - `KRAKEN_UNIVERSE_LIMIT`
 - `KRAKEN_HISTORY_DAYS`
+- `KRAKEN_SYMBOLS`
+- `KRAKEN_MODEL_ARTIFACT_PATH`
 - `NASDAQ_BASE_URL`
 - `STOCK_UNIVERSE_LIMIT`
 - `STOCK_HISTORY_DAYS`
+- `STOCK_HISTORY_LOAD_CONCURRENCY`
+- `STOCK_SYMBOLS`
+- `STOCK_MODEL_ARTIFACT_PATH`
 - `GDELT_BASE_URL`
 - `GDELT_TIMESPAN`
 - `GDELT_MAX_RECORDS`
@@ -79,12 +84,19 @@ Optional overrides:
 
 `KRAKEN_UNIVERSE_LIMIT` defaults to `0`, which scans every available USD pair from Kraken.
 `KRAKEN_HISTORY_DAYS` defaults to `180`. This widens the model lookback so trend signals are less sensitive to short-term noise.
+`KRAKEN_SYMBOLS` is optional. When set to a comma-separated symbol list, the crypto scan limits itself to that subset. This is mainly used by the chunked GitHub Actions crypto workflow.
+`KRAKEN_MODEL_ARTIFACT_PATH` is optional. When set, the crypto scan loads a pre-trained model artifact from disk instead of retraining inside that job. This is mainly used by the chunked GitHub Actions crypto workflow.
 `STOCK_UNIVERSE_LIMIT` defaults to `0`, which scans every stock returned by Nasdaq's screener. This is the heaviest run in the system and can take a long time because the app fetches historical candles per symbol.
 `STOCK_HISTORY_DAYS` defaults to `180`. This widens the model lookback while still fitting comfortably inside Nasdaq's public historical endpoint.
+`STOCK_HISTORY_LOAD_CONCURRENCY` defaults to `8`. Raise it carefully if you want faster stock scans and Nasdaq's public endpoint stays healthy for your runs.
+`STOCK_SYMBOLS` is optional. When set to a comma-separated symbol list, the stock scan limits itself to that subset. This is mainly used by the chunked GitHub Actions stock workflow.
+`STOCK_MODEL_ARTIFACT_PATH` is optional. When set, the stock scan loads a pre-trained model artifact from disk instead of retraining inside that job. This is mainly used by the chunked GitHub Actions stock workflow.
 `GDELT_TIMESPAN` defaults to `24h`. This keeps the news search recent without relying on feed syndication.
 `GDELT_MAX_RECORDS` defaults to `50`. Raise it if you want more news coverage per scan, but expect more API work.
 `API_RETRY_MAX_ATTEMPTS` defaults to `10`. `API_RETRY_INITIAL_DELAY_MS` defaults to `1000`. `API_RETRY_MAX_DELAY_MS` defaults to `30000`.
-`TELEGRAM_MESSAGE_DELAY_MS` defaults to `30000`. Set it lower if you want faster Telegram delivery, or `0` to send immediately.
+`TELEGRAM_MESSAGE_DELAY_MS` defaults to `1000`. Set it higher if you want slower pacing, or `0` to send immediately.
+
+For scheduled stock scans, prefer a finite `STOCK_UNIVERSE_LIMIT` such as `250` instead of `0`. Scanning the full screener means loading historical candles for every returned symbol and will dominate CI runtime.
 
 ## GitHub Actions
 
@@ -99,4 +111,7 @@ Before enabling them on GitHub, add these repository or environment secrets:
 - `TELEGRAM_TOKEN`
 - `TELEGRAM_CHAT_ID`
 
-Both workflows reference the `telegram-production` environment so you can add required reviewers or other protection rules before the Telegram secrets are used.
+Both workflows reference the `live` environment so you can add required reviewers or other protection rules before the Telegram secrets are used.
+
+The crypto workflow now runs as a chunked pipeline: it prepares the selected Kraken USD universe, trains one reusable crypto model, and then scans multiple chunks in parallel with a matrix job.
+The stock workflow now runs as a chunked pipeline: it prepares the selected stock universe, trains one reusable stock model, and then scans multiple 200-symbol chunks in parallel with a matrix job.

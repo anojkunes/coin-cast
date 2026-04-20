@@ -102,4 +102,29 @@ describe('MarketSignalService', () => {
     expect(result.signals[0]?.expectedDurationHours).toBeGreaterThan(0);
     expect(['good', 'mixed', 'avoid']).toContain(result.signals[0]?.tradeVerdict);
   });
+
+  it('can scan with a pretrained crypto model artifact', async () => {
+    const service = new MarketSignalService(
+      new FakeMarketRepository(),
+      [new FakeNewsRepository()],
+      cryptoScanProfile,
+    );
+
+    const scanOptions = {
+      universeLimit: 1,
+      historyDays: 90,
+      maxSignals: 5,
+      actionableConfidence: 0.1,
+    };
+    const pretrainedModel = await service.train(scanOptions);
+    const result = await service.scan(scanOptions, {
+      pretrainedModel,
+    });
+
+    expect(pretrainedModel.assetClass).toBe('crypto');
+    expect(pretrainedModel.samplesUsed).toBeGreaterThan(0);
+    expect(result.assetsScanned).toBe(1);
+    expect(result.signals).toHaveLength(1);
+    expect(result.modelQuality.qualityLabel).toBe(pretrainedModel.modelQuality.qualityLabel);
+  });
 });

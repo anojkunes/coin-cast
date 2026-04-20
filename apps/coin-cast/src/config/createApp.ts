@@ -1,8 +1,11 @@
+import { readFile } from 'node:fs/promises';
+
 import type {
   MarketAssetClass,
+  MarketSignal,
   NewsFeedRepository,
+  PretrainedMarketModel,
   ScanOptions,
-  ScanResult,
 } from '@coin-cast/core';
 import {
   MarketSignalService,
@@ -51,6 +54,7 @@ const createNewsRepositories = (config: AppConfig): NewsFeedRepository[] => [
 const createCryptoScanOptions = (config: AppConfig): ScanOptions => ({
   universeLimit: config.krakenUniverseLimit,
   historyDays: config.krakenHistoryDays,
+  symbolFilter: config.krakenSymbols,
   maxSignals: 5,
   actionableConfidence: 0.3,
 });
@@ -58,29 +62,19 @@ const createCryptoScanOptions = (config: AppConfig): ScanOptions => ({
 const createStockScanOptions = (config: AppConfig): ScanOptions => ({
   universeLimit: config.stockUniverseLimit,
   historyDays: config.stockHistoryDays,
+  historyLoadConcurrency: config.stockHistoryLoadConcurrency,
+  symbolFilter: config.stockSymbols,
   maxSignals: 5,
   actionableConfidence: 0.28,
 });
 
-const getDispatchableMessageCount = (result: ScanResult): number =>
-  result.ignoredAssets.length + result.watchlist.length + result.signals.length;
+const isActionableSignal = (signal: MarketSignal): boolean =>
+  signal.tradeVerdict === 'good' && signal.actionRecommendation !== 'wait';
 
-function* streamMessages(
-  composer: TelegramMessageComposer,
-  result: ScanResult,
-): Generator<string> {
-  for (const message of composer.composeIgnoredAssets(result.ignoredAssets)) {
-    yield message;
-  }
-
-  for (const message of composer.composeWatchlistSignals(result.watchlist, result.scannedAt)) {
-    yield message;
-  }
-
-  for (const message of composer.composeSignals(result.signals, result.scannedAt)) {
-    yield message;
-  }
-}
+const loadPretrainedModel = async (path: string): Promise<PretrainedMarketModel> => {
+  const contents = await readFile(path, 'utf8');
+  return JSON.parse(contents) as PretrainedMarketModel;
+};
 
 const createMarketRuntime = (
   config: AppConfig,
@@ -113,6 +107,7 @@ const createMarketRuntime = (
         config.apiRetryMaxAttempts,
         config.apiRetryInitialDelayMs,
         config.apiRetryMaxDelayMs,
+        config.stockHistoryLoadConcurrency,
       ),
       newsRepositories,
       stockScanProfile,
@@ -135,40 +130,77 @@ export const createCoinCastApp = (
 
   return {
     async run() {
+      const runStartedAt = Date.now();
+      let queuedMessages = 0;
+      let dispatchedMessages = 0;
+      let dispatchQueue = Promise.resolve();
+      const pretrainedModelPath =
+        marketRuntime.assetClass === 'crypto'
+          ? config.krakenModelArtifactPath
+          : config.stockModelArtifactPath;
+      const pretrainedModel = pretrainedModelPath
+        ? await loadPretrainedModel(pretrainedModelPath)
+        : undefined;
+
+      const enqueueSignalNotification = (signal: MarketSignal, scannedAt: Date): void => {
+        if (!isActionableSignal(signal)) {
+          return;
+        }
+
+        const message = messageComposer.composeSignal(signal, scannedAt);
+        queuedMessages += 1;
+        const messageNumber = queuedMessages;
+
+        dispatchQueue = dispatchQueue.then(async () => {
+          if (dispatchedMessages > 0 && config.telegramMessageDelayMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, config.telegramMessageDelayMs));
+          }
+
+          logger.info('Dispatching Telegram message', {
+            market: marketRuntime.assetClass,
+            messageNumber,
+            messageLength: message.length,
+            symbol: signal.symbol,
+            direction: signal.direction,
+            actionRecommendation: signal.actionRecommendation,
+          });
+
+          await notificationRepository.send(message);
+          dispatchedMessages += 1;
+        });
+      };
+
       logger.info('Running market scan', {
         market: marketRuntime.assetClass,
         scanOptions: marketRuntime.scanOptions,
+        pretrainedModelLoaded: pretrainedModel != null,
       });
+      const scanStartedAt = Date.now();
       const result = await marketRuntime.signalService.scan(
         marketRuntime.scanOptions,
+        {
+          pretrainedModel,
+          hooks: {
+            onSignal: (signal, context) => {
+              enqueueSignalNotification(signal, context.scannedAt);
+            },
+          },
+        },
       );
-      const totalMessages = getDispatchableMessageCount(result);
+      const scanDurationMs = Date.now() - scanStartedAt;
 
-      logger.info('Prepared Telegram messages', {
+      logger.info('Market scan completed; awaiting queued Telegram delivery', {
         market: marketRuntime.assetClass,
-        messages: totalMessages,
         assetsScanned: result.assetsScanned,
         signals: result.signals.length,
         watchlist: result.watchlist.length,
         ignoredAssets: result.ignoredAssets.length,
+        queuedMessages,
+        scanDurationMs,
       });
 
-      let dispatchedMessages = 0;
-
-      for (const message of streamMessages(messageComposer, result)) {
-        if (dispatchedMessages > 0 && config.telegramMessageDelayMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, config.telegramMessageDelayMs));
-        }
-
-        dispatchedMessages += 1;
-        logger.info('Dispatching Telegram message', {
-          market: marketRuntime.assetClass,
-          messageNumber: dispatchedMessages,
-          totalMessages,
-          messageLength: message.length,
-        });
-        await notificationRepository.send(message);
-      }
+      const dispatchStartedAt = Date.now();
+      await dispatchQueue;
 
       if (dispatchedMessages === 0) {
         logger.info('No Telegram messages were dispatched for this run', {
@@ -176,10 +208,15 @@ export const createCoinCastApp = (
         });
       }
 
+      const dispatchDurationMs = Date.now() - dispatchStartedAt;
       logger.info('Market run finished', {
         market: marketRuntime.assetClass,
         scannedAt: result.scannedAt.toISOString(),
         dispatchedMessages,
+        queuedMessages,
+        scanDurationMs,
+        dispatchDurationMs,
+        totalDurationMs: Date.now() - runStartedAt,
       });
 
       return {
