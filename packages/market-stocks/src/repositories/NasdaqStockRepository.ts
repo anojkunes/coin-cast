@@ -100,14 +100,16 @@ export class NasdaqStockRepository implements MarketRepository {
     private readonly maxRetries = Number(process.env.API_RETRY_MAX_ATTEMPTS || 10),
     private readonly initialRetryDelayMs = Number(process.env.API_RETRY_INITIAL_DELAY_MS || 1_000),
     private readonly maxRetryDelayMs = Number(process.env.API_RETRY_MAX_DELAY_MS || 30_000),
+    httpMaxSockets = 8,
   ) {
+    const maxSockets = Math.max(2, Math.floor(httpMaxSockets));
     this.http = axios.create({
       baseURL: baseUrl,
       timeout: 20_000,
       ...createHttpAgentOptions({
-        keepAlive: false,
-        maxSockets: 2,
-        maxFreeSockets: 0,
+        keepAlive: true,
+        maxSockets,
+        maxFreeSockets: maxSockets,
       }),
       headers: {
         ...buildNasdaqHeaders('/market-activity/stocks/screener'),

@@ -2,7 +2,7 @@ export type TradeVerdict = 'good' | 'mixed' | 'avoid';
 
 export interface TradeAssessment {
   fiveHourProbabilityUp: number;
-  actionRecommendation: 'buy' | 'wait' | 'avoid';
+  actionRecommendation: 'buy' | 'sell' | 'wait' | 'avoid';
   expectedDurationHours: number;
   expectedDurationLabel: string;
   tradeSuitabilityScore: number;

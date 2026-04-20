@@ -98,7 +98,7 @@ export class TradeAssessmentService {
           volumeBias * 0.03 +
           orderBookBias * 0.03 +
           Math.max(0, input.newsScore) * 0.04
-        : (1 - input.confidence) * 0.4 +
+        : input.confidence * 0.4 +
           (1 - trendBias) * 0.16 +
           (1 - longTrendBias) * 0.06 +
           momentumBias * 0.18 +
@@ -143,11 +143,17 @@ export class TradeAssessmentService {
           : 'avoid';
 
     const actionRecommendation =
-      tradeVerdict === 'good' && fiveHourProbabilityUp >= 0.6
-        ? 'buy'
-        : tradeVerdict === 'avoid' || fiveHourProbabilityUp <= 0.4
-          ? 'avoid'
-          : 'wait';
+      input.direction === 'bullish'
+        ? tradeVerdict === 'good' && fiveHourProbabilityUp >= 0.6
+          ? 'buy'
+          : tradeVerdict === 'avoid' || fiveHourProbabilityUp <= 0.4
+            ? 'avoid'
+            : 'wait'
+        : tradeVerdict === 'good' && fiveHourProbabilityUp <= 0.4
+          ? 'sell'
+          : tradeVerdict === 'avoid' || fiveHourProbabilityUp >= 0.6
+            ? 'avoid'
+            : 'wait';
 
     const reasons: string[] = [
       `trend may persist for about ${expectedDurationLabel}`,

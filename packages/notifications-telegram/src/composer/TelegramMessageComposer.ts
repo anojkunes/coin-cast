@@ -64,6 +64,10 @@ const formatAction = (action: MarketSignal['actionRecommendation']): string => {
     return 'Buy';
   }
 
+  if (action === 'sell') {
+    return 'Sell';
+  }
+
   if (action === 'wait') {
     return 'Wait';
   }

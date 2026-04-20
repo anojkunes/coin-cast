@@ -4,9 +4,15 @@ export interface LogisticRegressionOptions {
   l2?: number;
 }
 
-interface FeatureScalerState {
+export interface FeatureScalerState {
   means: number[];
   stdDevs: number[];
+}
+
+export interface SerializedLogisticRegressionClassifier {
+  weights: number[];
+  bias: number;
+  scaler: FeatureScalerState;
 }
 
 const sigmoid = (value: number): number => 1 / (1 + Math.exp(-value));
@@ -83,6 +89,29 @@ export class LogisticRegressionClassifier {
 
   isTrained(): boolean {
     return this.weights.length > 0;
+  }
+
+  serialize(): SerializedLogisticRegressionClassifier {
+    return {
+      weights: [...this.weights],
+      bias: this.bias,
+      scaler: {
+        means: [...this.scaler.means],
+        stdDevs: [...this.scaler.stdDevs],
+      },
+    };
+  }
+
+  static deserialize(serialized: SerializedLogisticRegressionClassifier): LogisticRegressionClassifier {
+    const classifier = new LogisticRegressionClassifier();
+    classifier.weights = [...serialized.weights];
+    classifier.bias = serialized.bias;
+    classifier.scaler = {
+      means: [...serialized.scaler.means],
+      stdDevs: [...serialized.scaler.stdDevs],
+    };
+
+    return classifier;
   }
 
   private predictProbabilityNormalized(features: number[]): number {

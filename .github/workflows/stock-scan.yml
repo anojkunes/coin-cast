@@ -5,31 +5,38 @@ on:
     - cron: '27 */4 * * *'
   workflow_dispatch: {}
 
+concurrency:
+  group: coin-cast-stock-scan
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
+env:
+  KRAKEN_BASE_URL: https://api.kraken.com/0/public
+  KRAKEN_UNIVERSE_LIMIT: '0'
+  KRAKEN_HISTORY_DAYS: '180'
+  NASDAQ_BASE_URL: https://api.nasdaq.com/api
+  STOCK_UNIVERSE_LIMIT: '250'
+  STOCK_HISTORY_DAYS: '180'
+  STOCK_HISTORY_LOAD_CONCURRENCY: '8'
+  STOCK_SCAN_CHUNK_SIZE: '200'
+  GDELT_BASE_URL: https://api.gdeltproject.org/api/v2/doc/doc
+  GDELT_TIMESPAN: '24h'
+  GDELT_MAX_RECORDS: '50'
+  API_RETRY_MAX_ATTEMPTS: '5'
+  API_RETRY_INITIAL_DELAY_MS: '1000'
+  API_RETRY_MAX_DELAY_MS: '30000'
+  COIN_CAST_VERBOSE_LOGS: 'true'
+
 jobs:
-  stock-scan:
+  prepare:
     runs-on: ubuntu-latest
-    environment: live
-    env:
-      KRAKEN_BASE_URL: https://api.kraken.com/0/public
-      KRAKEN_UNIVERSE_LIMIT: '0'
-      KRAKEN_HISTORY_DAYS: '180'
-      NASDAQ_BASE_URL: https://api.nasdaq.com/api
-      STOCK_UNIVERSE_LIMIT: '0'
-      STOCK_HISTORY_DAYS: '180'
-      GDELT_BASE_URL: https://api.gdeltproject.org/api/v2/doc/doc
-      GDELT_TIMESPAN: '24h'
-      GDELT_MAX_RECORDS: '50'
-      API_RETRY_MAX_ATTEMPTS: '10'
-      API_RETRY_INITIAL_DELAY_MS: '1000'
-      API_RETRY_MAX_DELAY_MS: '30000'
-      COIN_CAST_VERBOSE_LOGS: 'true'
-      TELEGRAM_BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
-      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      TELEGRAM_MESSAGE_DELAY_MS: '30000'
+    outputs:
+      chunk_matrix: ${{ steps.prepare.outputs.chunk_matrix }}
+      stock_symbols: ${{ steps.prepare.outputs.stock_symbols }}
+      selected_count: ${{ steps.prepare.outputs.selected_count }}
+      chunk_count: ${{ steps.prepare.outputs.chunk_count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,13 +48,90 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test -- --run
 
-      - name: Build
-        run: npm run build
+      - name: Prepare stock chunks
+        id: prepare
+        run: npx tsx apps/coin-cast/src/ci/prepareStockChunks.ts
 
-      - name: Run stock scanner
-        run: npm run start:stocks
+  train:
+    needs: prepare
+    if: ${{ needs.prepare.outputs.selected_count != '0' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Train reusable stock model
+        env:
+          STOCK_SYMBOLS: ${{ needs.prepare.outputs.stock_symbols }}
+          STOCK_MODEL_OUTPUT_PATH: stock-model.json
+        run: npx tsx apps/coin-cast/src/ci/trainStockModel.ts
+
+      - name: Upload trained stock model
+        uses: actions/upload-artifact@v4
+        with:
+          name: stock-trained-model
+          path: stock-model.json
+          if-no-files-found: error
+
+  scan-chunks:
+    needs: [prepare, train]
+    if: ${{ needs.prepare.outputs.chunk_count != '0' }}
+    runs-on: ubuntu-latest
+    environment: live
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        chunk: ${{ fromJson(needs.prepare.outputs.chunk_matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download trained stock model
+        uses: actions/download-artifact@v5
+        with:
+          name: stock-trained-model
+          path: .
+
+      - name: Scan stock chunk
+        env:
+          TELEGRAM_BASE_URL: ${{ secrets.TELEGRAM_BASE_URL }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_MESSAGE_DELAY_MS: '0'
+          STOCK_SYMBOLS: ${{ matrix.chunk.symbols }}
+          STOCK_MODEL_ARTIFACT_PATH: stock-model.json
+        run: npx tsx apps/coin-cast/src/index.ts stock
+
+  finalize:
+    needs: [prepare, scan-chunks]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize chunked stock scan
+        run: |
+          echo "Selected stocks: ${{ needs.prepare.outputs.selected_count }}"
+          echo "Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"
