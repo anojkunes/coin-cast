@@ -14,8 +14,8 @@ interface CryptoChunk {
 const logger = createLogger('crypto-chunk-preparer');
 
 const parseChunkSize = (): number => {
-  const parsed = Number(process.env.KRAKEN_SCAN_CHUNK_SIZE ?? 80);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 80;
+  const parsed = Number(process.env.KRAKEN_SCAN_CHUNK_SIZE ?? 1000);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1000;
 };
 
 const writeOutput = async (name: string, value: string): Promise<void> => {
