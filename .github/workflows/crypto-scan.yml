@@ -16,7 +16,7 @@ env:
   KRAKEN_BASE_URL: https://api.kraken.com/0/public
   KRAKEN_UNIVERSE_LIMIT: '0'
   KRAKEN_HISTORY_DAYS: '180'
-  KRAKEN_SCAN_CHUNK_SIZE: '1000'
+  KRAKEN_SCAN_CHUNK_SIZE: '200'
   NASDAQ_BASE_URL: https://api.nasdaq.com/api
   STOCK_UNIVERSE_LIMIT: '0'
   STOCK_HISTORY_DAYS: '180'
@@ -30,18 +30,18 @@ env:
 
 jobs:
   prepare:
+    name: Prepare crypto chunks
     runs-on: ubuntu-latest
     outputs:
       chunk_matrix: ${{ steps.prepare.outputs.chunk_matrix }}
-      kraken_symbols: ${{ steps.prepare.outputs.kraken_symbols }}
       selected_count: ${{ steps.prepare.outputs.selected_count }}
       chunk_count: ${{ steps.prepare.outputs.chunk_count }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -56,52 +56,23 @@ jobs:
         id: prepare
         run: npx tsx apps/coin-cast/src/ci/prepareCryptoChunks.ts
 
-  train:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.selected_count != '0' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Train reusable crypto model
-        env:
-          KRAKEN_SYMBOLS: ${{ needs.prepare.outputs.kraken_symbols }}
-          KRAKEN_MODEL_OUTPUT_PATH: crypto-model.json
-        run: npx tsx apps/coin-cast/src/ci/trainCryptoModel.ts
-
-      - name: Upload trained crypto model
-        uses: actions/upload-artifact@v4
-        with:
-          name: crypto-trained-model
-          path: crypto-model.json
-          if-no-files-found: error
-
   scan-chunks:
-    needs: [prepare, train]
+    name: "Scan crypto chunk ${{ matrix.chunk.number }}/${{ needs.prepare.outputs.chunk_count }} (${{ matrix.chunk.size }} pairs: ${{ matrix.chunk.firstSymbol }}-${{ matrix.chunk.lastSymbol }})"
+    needs: prepare
     if: ${{ needs.prepare.outputs.chunk_count != '0' }}
     runs-on: ubuntu-latest
     environment: live
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 4
       matrix:
         chunk: ${{ fromJson(needs.prepare.outputs.chunk_matrix) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -109,11 +80,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download trained crypto model
-        uses: actions/download-artifact@v5
-        with:
-          name: crypto-trained-model
-          path: .
+      - name: Describe crypto chunk
+        run: |
+          echo "Scanning crypto chunk ${{ matrix.chunk.number }}/${{ needs.prepare.outputs.chunk_count }}"
+          echo "Pairs in chunk: ${{ matrix.chunk.size }}"
+          echo "Range: ${{ matrix.chunk.firstSymbol }} -> ${{ matrix.chunk.lastSymbol }}"
 
       - name: Scan crypto chunk
         env:
@@ -122,10 +93,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_DELAY_MS: '0'
           KRAKEN_SYMBOLS: ${{ matrix.chunk.symbols }}
-          KRAKEN_MODEL_ARTIFACT_PATH: crypto-model.json
         run: npx tsx apps/coin-cast/src/index.ts crypto
 
   finalize:
+    name: Summarize crypto scan
     needs: [prepare, scan-chunks]
     if: ${{ always() }}
     runs-on: ubuntu-latest
@@ -134,3 +105,10 @@ jobs:
         run: |
           echo "Selected crypto pairs: ${{ needs.prepare.outputs.selected_count }}"
           echo "Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"
+          {
+            echo "### Crypto scan summary"
+            echo ""
+            echo "- Selected crypto pairs: ${{ needs.prepare.outputs.selected_count }}"
+            echo "- Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"
+            echo "- Target chunk size: ${{ env.KRAKEN_SCAN_CHUNK_SIZE }}"
+          } >> "$GITHUB_STEP_SUMMARY"

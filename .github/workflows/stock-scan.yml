@@ -19,8 +19,8 @@ env:
   NASDAQ_BASE_URL: https://api.nasdaq.com/api
   STOCK_UNIVERSE_LIMIT: '0'
   STOCK_HISTORY_DAYS: '180'
-  STOCK_HISTORY_LOAD_CONCURRENCY: '8'
-  STOCK_SCAN_CHUNK_SIZE: '1000'
+  STOCK_HISTORY_LOAD_CONCURRENCY: '4'
+  STOCK_SCAN_CHUNK_SIZE: '200'
   GDELT_BASE_URL: https://api.gdeltproject.org/api/v2/doc/doc
   GDELT_TIMESPAN: '24h'
   GDELT_MAX_RECORDS: '50'
@@ -31,18 +31,18 @@ env:
 
 jobs:
   prepare:
+    name: Prepare stock chunks
     runs-on: ubuntu-latest
     outputs:
       chunk_matrix: ${{ steps.prepare.outputs.chunk_matrix }}
-      stock_symbols: ${{ steps.prepare.outputs.stock_symbols }}
       selected_count: ${{ steps.prepare.outputs.selected_count }}
       chunk_count: ${{ steps.prepare.outputs.chunk_count }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -57,52 +57,23 @@ jobs:
         id: prepare
         run: npx tsx apps/coin-cast/src/ci/prepareStockChunks.ts
 
-  train:
-    needs: prepare
-    if: ${{ needs.prepare.outputs.selected_count != '0' }}
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Train reusable stock model
-        env:
-          STOCK_SYMBOLS: ${{ needs.prepare.outputs.stock_symbols }}
-          STOCK_MODEL_OUTPUT_PATH: stock-model.json
-        run: npx tsx apps/coin-cast/src/ci/trainStockModel.ts
-
-      - name: Upload trained stock model
-        uses: actions/upload-artifact@v4
-        with:
-          name: stock-trained-model
-          path: stock-model.json
-          if-no-files-found: error
-
   scan-chunks:
-    needs: [prepare, train]
+    name: "Scan stock chunk ${{ matrix.chunk.number }}/${{ needs.prepare.outputs.chunk_count }} (${{ matrix.chunk.size }} symbols: ${{ matrix.chunk.firstSymbol }}-${{ matrix.chunk.lastSymbol }})"
+    needs: prepare
     if: ${{ needs.prepare.outputs.chunk_count != '0' }}
     runs-on: ubuntu-latest
     environment: live
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 6
       matrix:
         chunk: ${{ fromJson(needs.prepare.outputs.chunk_matrix) }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -110,11 +81,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Download trained stock model
-        uses: actions/download-artifact@v5
-        with:
-          name: stock-trained-model
-          path: .
+      - name: Describe stock chunk
+        run: |
+          echo "Scanning stock chunk ${{ matrix.chunk.number }}/${{ needs.prepare.outputs.chunk_count }}"
+          echo "Symbols in chunk: ${{ matrix.chunk.size }}"
+          echo "Range: ${{ matrix.chunk.firstSymbol }} -> ${{ matrix.chunk.lastSymbol }}"
 
       - name: Scan stock chunk
         env:
@@ -123,10 +94,10 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_DELAY_MS: '0'
           STOCK_SYMBOLS: ${{ matrix.chunk.symbols }}
-          STOCK_MODEL_ARTIFACT_PATH: stock-model.json
         run: npx tsx apps/coin-cast/src/index.ts stock
 
   finalize:
+    name: Summarize stock scan
     needs: [prepare, scan-chunks]
     if: ${{ always() }}
     runs-on: ubuntu-latest
@@ -135,3 +106,10 @@ jobs:
         run: |
           echo "Selected stocks: ${{ needs.prepare.outputs.selected_count }}"
           echo "Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"
+          {
+            echo "### Stock scan summary"
+            echo ""
+            echo "- Selected stocks: ${{ needs.prepare.outputs.selected_count }}"
+            echo "- Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"
+            echo "- Target chunk size: ${{ env.STOCK_SCAN_CHUNK_SIZE }}"
+          } >> "$GITHUB_STEP_SUMMARY"

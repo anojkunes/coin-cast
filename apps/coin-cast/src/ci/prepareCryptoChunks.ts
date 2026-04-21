@@ -6,8 +6,11 @@ import { KrakenMarketRepository } from '@coin-cast/market-crypto';
 import { loadAppConfig } from '../config/env';
 
 interface CryptoChunk {
+  number: number;
   index: number;
   size: number;
+  firstSymbol: string;
+  lastSymbol: string;
   symbols: string;
 }
 
@@ -37,8 +40,11 @@ const buildChunks = (symbols: string[], chunkSize: number): CryptoChunk[] => {
   for (let index = 0; index < symbols.length; index += chunkSize) {
     const chunkSymbols = symbols.slice(index, index + chunkSize);
     chunks.push({
+      number: chunks.length + 1,
       index: Math.floor(index / chunkSize),
       size: chunkSymbols.length,
+      firstSymbol: chunkSymbols[0] ?? '',
+      lastSymbol: chunkSymbols.at(-1) ?? '',
       symbols: chunkSymbols.join(','),
     });
   }
