@@ -14,8 +14,8 @@ interface StockChunk {
 const logger = createLogger('stock-chunk-preparer');
 
 const parseChunkSize = (): number => {
-  const parsed = Number(process.env.STOCK_SCAN_CHUNK_SIZE ?? 200);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 200;
+  const parsed = Number(process.env.STOCK_SCAN_CHUNK_SIZE ?? 1000);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 1000;
 };
 
 const writeOutput = async (name: string, value: string): Promise<void> => {
