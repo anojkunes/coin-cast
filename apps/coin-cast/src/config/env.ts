@@ -17,6 +17,7 @@ export interface AppConfig {
   gdeltBaseUrl: string;
   gdeltTimespan: string;
   gdeltMaxRecords: number;
+  gdeltHeadlinesPath?: string;
 }
 
 const required = (name: string, fallback?: string): string => {
@@ -70,4 +71,5 @@ export const loadAppConfig = (): AppConfig => ({
   gdeltBaseUrl: required('GDELT_BASE_URL', 'https://api.gdeltproject.org/api/v2/doc/doc'),
   gdeltTimespan: required('GDELT_TIMESPAN', '24h'),
   gdeltMaxRecords: parseNumber(process.env.GDELT_MAX_RECORDS, 50),
+  gdeltHeadlinesPath: process.env.GDELT_HEADLINES_PATH?.trim() || undefined,
 });

@@ -28,10 +28,15 @@ const parseTimestamp = (value: unknown): number => {
 
 const normalizeKey = (value: string): string => value.trim().toLowerCase();
 
-const defaultQueries = [
+export const cryptoGdeltQueries = [
   '("crypto" OR cryptocurrency OR blockchain OR token OR altcoin OR web3 OR memecoin OR "meme coin" OR DeFi)',
   '(("hack" OR exploit OR listing OR delisting OR partnership OR launch OR approval OR lawsuit OR airdrop) AND (crypto OR cryptocurrency OR blockchain OR token OR coin))',
-];
+] as const;
+
+export const stockGdeltQueries = [
+  '("stock" OR stocks OR equity OR equities OR shares OR earnings OR guidance OR "quarterly results" OR "public company")',
+  '(("earnings" OR guidance OR acquisition OR merger OR partnership OR upgrade OR downgrade OR lawsuit OR investigation OR recall OR approval OR launch OR buyback OR dividend) AND (company OR stock OR stocks OR equity OR shares))',
+] as const;
 
 interface JsonFeedAuthor {
   name?: string;
@@ -65,7 +70,7 @@ export class GdeltNewsFeedRepository implements NewsFeedRepository {
     private readonly maxRetries = Number(process.env.API_RETRY_MAX_ATTEMPTS || 10),
     private readonly initialDelayMs = Number(process.env.API_RETRY_INITIAL_DELAY_MS || 1_000),
     private readonly maxDelayMs = Number(process.env.API_RETRY_MAX_DELAY_MS || 30_000),
-    private readonly queries = defaultQueries,
+    private readonly queries: readonly string[] = cryptoGdeltQueries,
   ) {}
 
   async getHeadlines(): Promise<NewsFeed[]> {

@@ -66,6 +66,7 @@ interface KrakenPriceDirectoryEntry {
   symbol: string;
   url: string;
   slug: string;
+  displayName: string;
 }
 
 const stablecoinSymbols = new Set([
@@ -145,6 +146,90 @@ const extractSymbol = (text: string): string | null => {
   return first?.toUpperCase() ?? null;
 };
 
+const priceSlugNoiseWords = new Set([
+  'price',
+  'prices',
+  'chart',
+  'charts',
+  'to',
+  'usd',
+  'usdt',
+  'eur',
+  'gbp',
+  'cad',
+  'aud',
+]);
+
+const titleCase = (value: string): string => value.charAt(0).toUpperCase() + value.slice(1);
+
+const humanizeSlug = (slug: string): string | null => {
+  const tokens = slug
+    .split('-')
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean)
+    .filter((token) => !priceSlugNoiseWords.has(token));
+
+  if (tokens.length === 0) {
+    return null;
+  }
+
+  return tokens.map((token) => (/^\d+$/.test(token) ? token : titleCase(token))).join(' ');
+};
+
+const normalizeKrakenCode = (value: string | undefined): string | null => {
+  const sanitized = (value ?? '').trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!sanitized) {
+    return null;
+  }
+
+  let normalized = sanitized;
+  while (
+    normalized.length > 3 &&
+    (normalized.startsWith('X') || normalized.startsWith('Z')) &&
+    /^[A-Z]/.test(normalized[1] ?? '')
+  ) {
+    normalized = normalized.slice(1);
+  }
+
+  return normalized;
+};
+
+const stripQuoteSuffix = (value: string | undefined): string | null => {
+  const sanitized = (value ?? '').trim().toUpperCase();
+  if (!sanitized) {
+    return null;
+  }
+
+  return sanitized.replace(/USD$|USDT$|EUR$|GBP$|CAD$|AUD$/i, '') || null;
+};
+
+const collectAliases = (...values: Array<string | null | undefined>): string[] => {
+  const aliases: string[] = [];
+  const seen = new Set<string>();
+
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    aliases.push(trimmed);
+  }
+
+  return aliases;
+};
+
+interface CryptoAssetIdentity {
+  name: string;
+  aliases: string[];
+}
+
 export class KrakenMarketRepository implements MarketRepository {
   private readonly logger = createLogger('kraken-market-repository');
 
@@ -200,18 +285,21 @@ export class KrakenMarketRepository implements MarketRepository {
         const volume = ticker?.v?.[1] ? Number(ticker.v[1]) : undefined;
         const open = ticker?.o ? Number(ticker.o) : undefined;
         const symbol = parseBaseSymbol(pair, pairKey).toUpperCase();
+        const priceDirectoryEntry = this.findPriceDirectoryEntry(priceDirectory, pair, pairKey, symbol);
+        const identity = this.buildAssetIdentity(pair, pairKey, symbol, priceDirectoryEntry);
 
         return {
           id: pairKey,
           symbol,
-          name: symbol,
+          name: identity.name,
+          aliases: identity.aliases,
           assetClass: 'crypto',
           marketSegment: 'crypto',
           marketCapRank: undefined,
           currentPriceUsd: currentPrice,
           change24hPercent: open && currentPrice ? ((currentPrice - open) / open) * 100 : undefined,
           volume24hUsd: volume,
-          marketPageUrl: priceDirectory.get(symbol),
+          marketPageUrl: priceDirectoryEntry?.url,
           marketPageLabel: 'Kraken market page',
         } satisfies MarketAsset;
       })
@@ -310,7 +398,52 @@ export class KrakenMarketRepository implements MarketRepository {
     return now - Math.max(1, days) * 86_400;
   }
 
-  private async loadPriceDirectory(): Promise<Map<string, string>> {
+  private findPriceDirectoryEntry(
+    directory: Map<string, KrakenPriceDirectoryEntry>,
+    pair: KrakenAssetPair,
+    pairKey: string,
+    symbol: string,
+  ): KrakenPriceDirectoryEntry | undefined {
+    const candidates = collectAliases(
+      symbol,
+      stripQuoteSuffix(pair.altname),
+      normalizeKrakenCode(pair.base),
+      normalizeKrakenCode(parseBaseSymbol(pair, pairKey)),
+    );
+
+    for (const candidate of candidates) {
+      const entry = directory.get(candidate.toUpperCase());
+      if (entry) {
+        return entry;
+      }
+    }
+
+    return undefined;
+  }
+
+  private buildAssetIdentity(
+    pair: KrakenAssetPair,
+    pairKey: string,
+    symbol: string,
+    priceDirectoryEntry?: KrakenPriceDirectoryEntry,
+  ): CryptoAssetIdentity {
+    const inferredName = priceDirectoryEntry?.displayName?.trim();
+    const name = inferredName && inferredName.length > 0 ? inferredName : symbol;
+
+    return {
+      name,
+      aliases: collectAliases(
+        symbol,
+        stripQuoteSuffix(pair.altname),
+        normalizeKrakenCode(pair.base),
+        normalizeKrakenCode(parseBaseSymbol(pair, pairKey)),
+        priceDirectoryEntry?.symbol,
+        inferredName,
+      ),
+    };
+  }
+
+  private async loadPriceDirectory(): Promise<Map<string, KrakenPriceDirectoryEntry>> {
     try {
       const html = await this.request<string>(
         () => this.webHttp.get('/prices'),
@@ -334,6 +467,7 @@ export class KrakenMarketRepository implements MarketRepository {
           symbol,
           url: `https://www.kraken.com/prices/${slug}`,
           slug,
+          displayName: humanizeSlug(slug) ?? symbol,
         };
         const existing = entries.get(symbol);
         if (!existing || candidate.slug.length > existing.slug.length) {
@@ -341,7 +475,7 @@ export class KrakenMarketRepository implements MarketRepository {
         }
       }
 
-      return new Map(Array.from(entries.values()).map((entry) => [entry.symbol, entry.url]));
+      return new Map(Array.from(entries.values()).map((entry) => [entry.symbol.toUpperCase(), entry]));
     } catch {
       return new Map();
     }

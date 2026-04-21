@@ -6,6 +6,7 @@ export interface MarketAsset {
   id: string;
   symbol: string;
   name: string;
+  aliases?: string[];
   assetClass: MarketAssetClass;
   marketSegment?: MarketAssetSegment;
   marketCapRank?: number;

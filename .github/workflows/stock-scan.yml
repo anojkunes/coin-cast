@@ -37,6 +37,7 @@ jobs:
       chunk_matrix: ${{ steps.prepare.outputs.chunk_matrix }}
       selected_count: ${{ steps.prepare.outputs.selected_count }}
       chunk_count: ${{ steps.prepare.outputs.chunk_count }}
+      headline_count: ${{ steps.fetch-headlines.outputs.headline_count }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -56,6 +57,20 @@ jobs:
       - name: Prepare stock chunks
         id: prepare
         run: npx tsx apps/coin-cast/src/ci/prepareStockChunks.ts
+
+      - name: Fetch stock GDELT headlines
+        id: fetch-headlines
+        env:
+          GDELT_HEADLINES_PATH: .artifacts/gdelt/stock-headlines.json
+        run: npx tsx apps/coin-cast/src/ci/fetchGdeltHeadlines.ts stock
+
+      - name: Upload stock GDELT headlines artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: stock-gdelt-headlines
+          path: .artifacts/gdelt/stock-headlines.json
+          if-no-files-found: error
+          retention-days: 1
 
   scan-chunks:
     name: "Scan stock chunk ${{ matrix.chunk.number }}/${{ needs.prepare.outputs.chunk_count }} (${{ matrix.chunk.size }} symbols: ${{ matrix.chunk.firstSymbol }}-${{ matrix.chunk.lastSymbol }})"
@@ -81,6 +96,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Download stock GDELT headlines artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: stock-gdelt-headlines
+          path: .artifacts/gdelt
+
       - name: Describe stock chunk
         run: |
           echo "Scanning stock chunk ${{ matrix.chunk.number }}/${{ needs.prepare.outputs.chunk_count }}"
@@ -93,6 +114,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_MESSAGE_DELAY_MS: '0'
+          GDELT_HEADLINES_PATH: .artifacts/gdelt/stock-headlines.json
           STOCK_SYMBOLS: ${{ matrix.chunk.symbols }}
         run: npx tsx apps/coin-cast/src/index.ts stock
 
@@ -112,4 +134,5 @@ jobs:
             echo "- Selected stocks: ${{ needs.prepare.outputs.selected_count }}"
             echo "- Chunk jobs: ${{ needs.prepare.outputs.chunk_count }}"
             echo "- Target chunk size: ${{ env.STOCK_SCAN_CHUNK_SIZE }}"
+            echo "- Cached GDELT headlines: ${{ needs.prepare.outputs.headline_count }}"
           } >> "$GITHUB_STEP_SUMMARY"

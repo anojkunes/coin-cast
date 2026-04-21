@@ -15,7 +15,12 @@ import {
 } from '@coin-cast/core';
 import { KrakenMarketRepository } from '@coin-cast/market-crypto';
 import { NasdaqStockRepository } from '@coin-cast/market-stocks';
-import { GdeltNewsFeedRepository } from '@coin-cast/news-gdelt';
+import {
+  CachedGdeltNewsFeedRepository,
+  GdeltNewsFeedRepository,
+  cryptoGdeltQueries,
+  stockGdeltQueries,
+} from '@coin-cast/news-gdelt';
 import { TelegramMessageComposer } from '@coin-cast/notifications-telegram';
 
 import { telegramRepository } from './NotificationRepositoryConfig';
@@ -40,16 +45,26 @@ interface MarketRuntime {
 
 const logger = createLogger('coin-cast-runner');
 
-const createNewsRepositories = (config: AppConfig): NewsFeedRepository[] => [
-  new GdeltNewsFeedRepository(
-    config.gdeltBaseUrl,
-    config.gdeltTimespan,
-    config.gdeltMaxRecords,
-    config.apiRetryMaxAttempts,
-    config.apiRetryInitialDelayMs,
-    config.apiRetryMaxDelayMs,
-  ),
-];
+const createNewsRepositories = (
+  config: AppConfig,
+  marketToRun: MarketAssetClass,
+): NewsFeedRepository[] => {
+  if (config.gdeltHeadlinesPath) {
+    return [new CachedGdeltNewsFeedRepository(config.gdeltHeadlinesPath)];
+  }
+
+  return [
+    new GdeltNewsFeedRepository(
+      config.gdeltBaseUrl,
+      config.gdeltTimespan,
+      config.gdeltMaxRecords,
+      config.apiRetryMaxAttempts,
+      config.apiRetryInitialDelayMs,
+      config.apiRetryMaxDelayMs,
+      marketToRun === 'crypto' ? cryptoGdeltQueries : stockGdeltQueries,
+    ),
+  ];
+};
 
 const createCryptoScanOptions = (config: AppConfig): ScanOptions => ({
   universeLimit: config.krakenUniverseLimit,
@@ -70,6 +85,9 @@ const createStockScanOptions = (config: AppConfig): ScanOptions => ({
 
 const isActionableSignal = (signal: MarketSignal): boolean =>
   signal.tradeVerdict === 'good' && signal.actionRecommendation !== 'wait';
+
+const isWatchlistNotificationCandidate = (signal: MarketSignal): boolean =>
+  signal.tradeVerdict === 'good' && signal.actionRecommendation === 'buy';
 
 const loadPretrainedModel = async (path: string): Promise<PretrainedMarketModel> => {
   const contents = await readFile(path, 'utf8');
@@ -119,7 +137,7 @@ export const createCoinCastApp = (
   config: AppConfig,
   options: CoinCastAppOptions,
 ): CoinCastApp => {
-  const newsRepositories = createNewsRepositories(config);
+  const newsRepositories = createNewsRepositories(config, options.marketToRun);
   const notificationRepository = telegramRepository(config);
   const messageComposer = new TelegramMessageComposer();
   const marketRuntime = createMarketRuntime(
@@ -142,12 +160,23 @@ export const createCoinCastApp = (
         ? await loadPretrainedModel(pretrainedModelPath)
         : undefined;
 
-      const enqueueSignalNotification = (signal: MarketSignal, scannedAt: Date): void => {
-        if (!isActionableSignal(signal)) {
+      const enqueueNotification = (
+        signal: MarketSignal,
+        scannedAt: Date,
+        kind: 'signal' | 'watchlist',
+      ): void => {
+        const shouldSend =
+          kind === 'signal'
+            ? isActionableSignal(signal)
+            : isWatchlistNotificationCandidate(signal);
+        if (!shouldSend) {
           return;
         }
 
-        const message = messageComposer.composeSignal(signal, scannedAt);
+        const message =
+          kind === 'signal'
+            ? messageComposer.composeSignal(signal, scannedAt)
+            : messageComposer.composeWatchlistSignal(signal, scannedAt);
         queuedMessages += 1;
         const messageNumber = queuedMessages;
 
@@ -160,6 +189,7 @@ export const createCoinCastApp = (
             market: marketRuntime.assetClass,
             messageNumber,
             messageLength: message.length,
+            messageKind: kind,
             symbol: signal.symbol,
             direction: signal.direction,
             actionRecommendation: signal.actionRecommendation,
@@ -182,7 +212,10 @@ export const createCoinCastApp = (
           pretrainedModel,
           hooks: {
             onSignal: (signal, context) => {
-              enqueueSignalNotification(signal, context.scannedAt);
+              enqueueNotification(signal, context.scannedAt, 'signal');
+            },
+            onWatchlist: (signal, context) => {
+              enqueueNotification(signal, context.scannedAt, 'watchlist');
             },
           },
         },

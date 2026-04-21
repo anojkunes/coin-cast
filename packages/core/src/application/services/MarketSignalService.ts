@@ -55,8 +55,13 @@ export interface IgnoredAssetSummary {
   reason: string;
 }
 
+interface ScanHookContext {
+  scannedAt: Date;
+}
+
 export interface ScanHooks {
-  onSignal?: (signal: MarketSignal, context: { scannedAt: Date }) => Promise<void> | void;
+  onSignal?: (signal: MarketSignal, context: ScanHookContext) => Promise<void> | void;
+  onWatchlist?: (signal: MarketSignal, context: ScanHookContext) => Promise<void> | void;
 }
 
 export interface PretrainedMarketModel {
@@ -340,6 +345,7 @@ export class MarketSignalService {
         const watchlistFloor = Math.max(0.12, confidenceFloor * 0.65);
         if (edge >= watchlistFloor) {
           watchlist.push(signal);
+          await hooks.onWatchlist?.(signal, { scannedAt });
         } else {
           ignoredAssets.push({
             assetId: asset.id,

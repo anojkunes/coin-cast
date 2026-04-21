@@ -79,6 +79,7 @@ Optional overrides:
 - `GDELT_BASE_URL`
 - `GDELT_TIMESPAN`
 - `GDELT_MAX_RECORDS`
+- `GDELT_HEADLINES_PATH`
 - `API_RETRY_MAX_ATTEMPTS`
 - `API_RETRY_INITIAL_DELAY_MS`
 - `API_RETRY_MAX_DELAY_MS`
@@ -97,8 +98,11 @@ Optional overrides:
 `STOCK_MODEL_ARTIFACT_PATH` is optional. When set, the stock scan loads a pre-trained model artifact from disk instead of retraining inside that job. This is an advanced override and is not used by the default GitHub Actions workflow.
 `GDELT_TIMESPAN` defaults to `24h`. This keeps the news search recent without relying on feed syndication.
 `GDELT_MAX_RECORDS` defaults to `50`. Raise it if you want more news coverage per scan, but expect more API work.
+`GDELT_HEADLINES_PATH` is optional. When set, the app loads cached GDELT headlines from a local JSON file instead of calling the live API. The chunked GitHub Actions workflows now use this to fetch one small headline artifact in `prepare` and reuse it across every chunk job.
 `API_RETRY_MAX_ATTEMPTS` defaults to `10`. `API_RETRY_INITIAL_DELAY_MS` defaults to `1000`. `API_RETRY_MAX_DELAY_MS` defaults to `30000`.
 `TELEGRAM_MESSAGE_DELAY_MS` defaults to `1000`. Set it higher if you want slower pacing, or `0` to send immediately.
+
+GDELT uses one shared market-level query pool per scan, not one query per asset. Crypto scans use crypto-oriented queries; stock scans use stock/company-oriented queries. The per-asset relevance matching happens after headlines are fetched.
 
 For scheduled full-market runs, keep `KRAKEN_UNIVERSE_LIMIT=0` and `STOCK_UNIVERSE_LIMIT=0`, then tune `KRAKEN_SCAN_CHUNK_SIZE` and `STOCK_SCAN_CHUNK_SIZE` together with workflow `max-parallel`. Lower chunk sizes mean more jobs with smaller batches; they only reduce wall-clock if you let more jobs run at the same time.
 
@@ -117,5 +121,5 @@ Before enabling them on GitHub, add these repository or environment secrets:
 
 Both workflows reference the `live` environment so you can add required reviewers or other protection rules before the Telegram secrets are used.
 
-The crypto workflow now runs as a chunked pipeline: it prepares the full selected Kraken USD universe and then scans the market in chunked matrix jobs. Each chunk trains and scores locally inside its own job.
-The stock workflow now runs as a chunked pipeline: it prepares the full selected stock universe and then scans the market in chunked matrix jobs. Each chunk trains and scores locally inside its own job.
+The crypto workflow now runs as a chunked pipeline: it prepares the full selected Kraken USD universe, fetches one shared crypto GDELT headline artifact, and then scans the market in chunked matrix jobs. Each chunk trains and scores locally inside its own job while reusing the cached headline file.
+The stock workflow now runs as a chunked pipeline: it prepares the full selected stock universe, fetches one shared stock GDELT headline artifact, and then scans the market in chunked matrix jobs. Each chunk trains and scores locally inside its own job while reusing the cached headline file.

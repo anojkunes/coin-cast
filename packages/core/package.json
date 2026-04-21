@@ -6,5 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsup src/index.ts --format esm --sourcemap --clean --out-dir dist"
+  },
+  "dependencies": {
+    "compromise": "^14.15.0"
   }
 }
